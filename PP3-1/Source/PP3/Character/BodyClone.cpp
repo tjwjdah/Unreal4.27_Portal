@@ -5,6 +5,14 @@
 #include "PP3Character.h"
 #include "../PortalV2/PortalTravellerComponent.h"
 #include "../PortalV2/PortalV2.h"
+#include "../PortalV2/PortalGunComponent.h"
+#include "GameFramework/PlayerController.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/SceneCaptureComponent2D.h"
+
+#include "Camera/CameraComponent.h"
+#include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 // Sets default values
 ABodyClone::ABodyClone()
 {
@@ -61,44 +69,84 @@ void ABodyClone::BeginPlay()
 void ABodyClone::SetSource(AActor* Actor)
 {
 	
-
+	HideClear();
 	Super::SetSource(Actor);
 
 	m_Original = Cast<APP3Character>(SourceActor);
 
 	if (!IsValid(m_Original))
 		return;
-	TSet<APortalV2*> Portals;
-	if (SourceActor)
+	HiddenPlayerController = Cast<APlayerController>(m_Original->GetController());
+
+	// ÇÃ·¹ÀÌ¾î È­¸é¿¡¼­ CloneÀÇ 1ÀÎÄª ÆÈ¡¤ÃÑÀ» ¼û±è
+	if (APlayerController* PC = HiddenPlayerController.Get())
 	{
-		UPortalTravellerComponent* Traveller = SourceActor->FindComponentByClass<UPortalTravellerComponent>();
-		if (Traveller)
-			Portals = Traveller->GetInPortals();
+		PC->HiddenPrimitiveComponents.AddUnique(m_Arms);
+		PC->HiddenPrimitiveComponents.AddUnique(m_ArmsGun);
 	}
-	for (auto& portal : Portals) {
-		portal->GetPortalCamera()->HideComponent(m_Body);
-		portal->GetPortalCamera()->HideComponent(m_Gun);
-		portal->GetLinkPortal()->GetPortalCamera()->HideComponent(m_Body);
-		portal->GetLinkPortal()->GetPortalCamera()->HideComponent(m_Gun);
-		//portal->GetLinkPortal()->GetPortalCamera()->HideComponent(m_Arms);
-		//portal->GetLinkPortal()->GetPortalCamera()->HideComponent(m_ArmsGun);
+	CloneMaterials.Reset();
+	USkeletalMeshComponent* Meshes[] = { m_Body, m_Gun, m_Arms, m_ArmsGun };
+
+	for (USkeletalMeshComponent* Mesh : Meshes)
+	{
+		if (!IsValid(Mesh)) continue;
+
 		
+		Mesh->SetOnlyOwnerSee(false);
+		Mesh->SetOwnerNoSee(false);
+		Mesh->SetVisibility(true);
+		Mesh->SetHiddenInGame(false);
+
+		for (int32 Slot = 0; Slot < Mesh->GetNumMaterials(); ++Slot)
+		{
+			AddCloneMaterial(Mesh->CreateDynamicMaterialInstance(Slot));
+		}
 	}
 
-	UMaterialInstanceDynamic* Material = m_Body->CreateDynamicMaterialInstance(0);
-	if (Material)
-		AddCloneMaterial(Material);
-	Material = m_Gun->CreateDynamicMaterialInstance(0);
-	if (Material)
-		AddCloneMaterial(Material);
 	UpdateAnim();
 	
+}
+
+void ABodyClone::ShowStart()
+{
+
+	OutClone();
+}
+
+void ABodyClone::SetCaptureVisibility(USceneCaptureComponent2D* Capture, bool bShowFirstPerson)
+{
+	if (!IsValid(Capture)) return;
+
+	CaptureCameras.AddUnique(Capture);
+
+	auto SetHidden = [Capture](UPrimitiveComponent* Component, bool bHide)
+		{
+			if (!IsValid(Component)) return;
+
+			if (bHide)
+				Capture->HideComponent(Component);
+			else
+				Capture->HiddenComponents.Remove(Component);
+		};
+
+	SetHidden(m_Arms, !bShowFirstPerson);
+	SetHidden(m_ArmsGun, !bShowFirstPerson);
+
+	SetHidden(m_Body, bShowFirstPerson);
+	SetHidden(m_Gun, bShowFirstPerson);
+}
+
+void ABodyClone::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	HideClear();
+	Super::EndPlay(EndPlayReason);
 }
 
 // Called every frame
 void ABodyClone::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	/*
 	if (!IsValid(SourceActor))
 		return;
 
@@ -107,7 +155,7 @@ void ABodyClone::Tick(float DeltaTime)
 	
 	if (m_Original->GetFollowCamera())
 		m_Camera->SetRelativeRotation(m_Original->GetFollowCamera()->GetRelativeRotation());
-	
+	*/
 }
 
 void ABodyClone::UpdateAnim()
@@ -137,27 +185,59 @@ void ABodyClone::UpdateAnim()
 
 void ABodyClone::UpdateClone(APortalV2* Portal)
 {
+	if (!IsValid(m_Original) || !IsValid(Portal) || !IsValid(Portal->GetLinkPortal())) return;
+
 	Super::UpdateClone(Portal);
-	
+
+	auto SyncComponent = [Portal](USceneComponent* CloneComponent, USceneComponent* OriginalComponent)
+		{
+			if (!IsValid(CloneComponent) || !IsValid(OriginalComponent)) return;
+
+			FTransform NewTransform = OriginalComponent->GetComponentTransform();
+			NewTransform.SetLocation(Portal->TransformPoint(NewTransform.GetLocation()));
+			NewTransform.SetRotation(Portal->TransformRotation(NewTransform.GetRotation()));
+
+			CloneComponent->SetWorldTransform(NewTransform, false, nullptr, ETeleportType::TeleportPhysics);
+		};
+
+	// ºÎ¸ðºÎÅÍ ¸ÂÃá µÚ ÀÚ½Ä Mesh¸¦ ¸ÂÃä´Ï´Ù.
+	SyncComponent(m_Camera, m_Original->GetFollowCamera());
+	SyncComponent(m_Body, m_Original->GetCharacterMesh());
+	SyncComponent(m_Gun, m_Original->GetVisualGunMesh());
+	SyncComponent(m_Arms, m_Original->GetArmsMesh());
+	SyncComponent(m_ArmsGun, m_Original->GetGunMesh());
 }
 
 void ABodyClone::HideClear()
 {
-	TSet<APortalV2*> Portals;
-	if (SourceActor)
+	OutClone();
+
+	if (APlayerController* PC = HiddenPlayerController.Get())
 	{
-		UPortalTravellerComponent* Traveller = SourceActor->FindComponentByClass<UPortalTravellerComponent>();
-		if (Traveller)
-			Portals = Traveller->GetInPortals();
+		PC->HiddenPrimitiveComponents.Remove(m_Arms);
+		PC->HiddenPrimitiveComponents.Remove(m_ArmsGun);
 	}
-	for (auto& portal : Portals) {
-		portal->GetPortalCamera()->HiddenComponents.Remove(m_Body);
-		portal->GetPortalCamera()->HiddenComponents.Remove(m_Gun);
-		portal->GetLinkPortal()->GetPortalCamera()->HiddenComponents.Remove(m_Body);
-		portal->GetLinkPortal()->GetPortalCamera()->HiddenComponents.Remove(m_Gun);
-		//portal->GetLinkPortal()->GetPortalCamera()->HiddenComponents.Remove(m_Arms);
-		//portal->GetLinkPortal()->GetPortalCamera()->HiddenComponents.Remove(m_ArmsGun);
-		
+
+	HiddenPlayerController.Reset();
+}
+
+void ABodyClone::OutClone()
+{
+
+	UPrimitiveComponent* Components[] = { m_Body, m_Gun, m_Arms, m_ArmsGun };
+
+	for (const auto& WeakCapture : CaptureCameras)
+	{
+		USceneCaptureComponent2D* Capture = WeakCapture.Get();
+		if (!IsValid(Capture)) continue;
+
+		for (UPrimitiveComponent* Component : Components)
+		{
+			if (IsValid(Component))
+				Capture->HiddenComponents.Remove(Component);
+		}
 	}
+
+	CaptureCameras.Reset();
 }
 

@@ -139,5 +139,10 @@ public:
 
 	USceneComponent* GetGrabSocket() { return m_Grabsocket; }
 	UArrowComponent* GetArrow() {return m_Arrow1;}
+
+
+	void portalvisibletest();
+
+	UPortalGunComponent* GetPortalGunComponent() { return PortalGunComponent; }
 };
 

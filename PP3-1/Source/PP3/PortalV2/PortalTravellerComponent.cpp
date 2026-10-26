@@ -28,7 +28,7 @@ UPortalTravellerComponent::UPortalTravellerComponent()
 	TeleportPrimitive = nullptr;
 	bUseClone = true;
 	CloneActor = nullptr;
-	ClonePortal = nullptr;
+	CloneSourcePortal = nullptr;
 	bPortalMoving = false;
 	// ...
 }
@@ -105,6 +105,8 @@ void UPortalTravellerComponent::SetOwnerVelocity(const FVector& NewVelocity)
 		UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
 		if (Movement)
 		{
+			if (Movement->IsMovingOnGround() && NewVelocity.Z > KINDA_SMALL_NUMBER)
+				Movement->SetMovementMode(MOVE_Falling);
 			Movement->Velocity = NewVelocity;
 			return;
 		}
@@ -304,18 +306,25 @@ void UPortalTravellerComponent::ShowClone(APortalV2* Portal)
 		}
 		CloneActor->SetSource(GetOwner());
 	}
+	CloneSourcePortal = Portal;
+	
+	CloneActor->SetActorHiddenInGame(false);
+	CloneActor->ShowStart();
 
+	UpdateClone(Portal);
+	/*
 	ClonePortal = Portal;
 	CloneActor->SetActorHiddenInGame(false);
-
+	CloneActor->ShowStart();
 	UpdateClone(Portal);
 	SetOriginalClip(Portal, true);
 	CloneActor->SetClip(Portal, true);
+	*/
 }
 
 void UPortalTravellerComponent::UpdateClone(APortalV2* Portal)
 {
-	if (!IsValid(CloneActor) || ClonePortal != Portal)
+	if (!IsValid(CloneActor) || CloneSourcePortal != Portal)
 		return;
 
 
@@ -326,7 +335,7 @@ void UPortalTravellerComponent::UpdateClone(APortalV2* Portal)
 
 void UPortalTravellerComponent::HideClone(APortalV2* Portal)
 {
-	if (ClonePortal != Portal)
+	if (CloneSourcePortal != Portal)
 		return;
 
 	SetOriginalClip(nullptr, false);
@@ -335,9 +344,10 @@ void UPortalTravellerComponent::HideClone(APortalV2* Portal)
 	{
 		CloneActor->SetClip(nullptr, false);
 		CloneActor->SetActorHiddenInGame(true);
+		CloneActor->OutClone();
 	}
 
-	ClonePortal = nullptr;
+	CloneSourcePortal = nullptr;
 }
 
 void UPortalTravellerComponent::ClearClone()
@@ -351,7 +361,7 @@ void UPortalTravellerComponent::ClearClone()
 	}
 
 	CloneActor = nullptr;
-	ClonePortal = nullptr;
+	CloneSourcePortal = nullptr;
 }
 
 void UPortalTravellerComponent::CreateOriginalMaterials()

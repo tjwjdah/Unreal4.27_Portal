@@ -28,7 +28,12 @@
 #include "Components/CapsuleComponent.h"
 
 #include "Engine/TextureRenderTarget2D.h"
+#include "DrawDebugHelpers.h"
+#include "HAL/IConsoleManager.h"
 
+#include "../Character/PP3Character.h"
+#include "../Character/BodyClone.h"
+#include "Components/SkeletalMeshComponent.h"
 
 // Sets default values
 
@@ -103,7 +108,7 @@ APortalV2::APortalV2()
     PortalCamera->ShowFlags.SetMotionBlur(false);
     PortalCamera->ShowFlags.SetEyeAdaptation(false);
     PortalCamera->ShowFlags.SetBloom(false);
-    
+
     DirectionArrow = CreateDefaultSubobject<UArrowComponent>(TEXT("DirectionArrow"));
     DirectionArrow->SetupAttachment(RootSceneComponent);
 
@@ -183,7 +188,7 @@ void APortalV2::BeginPlay()
     // ActivatePortal();
     ResetPortalRenderHistory();
     DeActivatePortal();
-  
+
 }
 
 void APortalV2::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -271,7 +276,7 @@ void APortalV2::Tick(float DeltaTime)
             if (PortalTeleport(Actor))
                 continue;
 
-         
+
         }
 
         Traveller->SetPreLocation(CurrentLocation);
@@ -283,7 +288,7 @@ void APortalV2::Tick(float DeltaTime)
             It.RemoveCurrent();
     }
 
-  
+
 }
 
 void APortalV2::InitializePortalRenderTarget()
@@ -303,7 +308,6 @@ void APortalV2::InitializePortalRenderTarget()
     }
 
     PortalRenderTarget = UKismetRenderingLibrary::CreateRenderTarget2D(World, RenderTargetWidth, RenderTargetHeight, ETextureRenderTargetFormat::RTF_RGBA16f);
-
     if (!PortalRenderTarget) return;
 
     PortalRenderTarget->ClearColor = FLinearColor::Black;
@@ -393,7 +397,7 @@ void APortalV2::ActivatePortal()
         PortalCamera->SetComponentTickEnabled(true);
         PortalCamera->bEnableClipPlane = true;
     }
-    
+
     AllPortalBlocksBlockOn(true);
 
     HiddenComponentsUpdate();
@@ -420,7 +424,7 @@ void APortalV2::DeActivatePortal()
         PortalCamera->SetComponentTickEnabled(false);
         PortalCamera->bEnableClipPlane = false;
     }
-   
+
     AllPortalBlocksBlockOn(false);
 
 }
@@ -513,7 +517,7 @@ void APortalV2::RemoveTraveller(AActor* Actor)
     Traveller->ExitPortal(this);
     Traveller->HideClone(this);
 
-  
+
 }
 
 FVector APortalV2::TransformPoint(const FVector& WorldPoint)
@@ -575,6 +579,7 @@ FQuat APortalV2::TransformRotation(const FQuat& WorldRotation)
 
 bool APortalV2::PortalTeleport(AActor* Actor)
 {
+
     if (!IsValid(Actor) || !IsValid(LinkPortal))
         return false;
     UPortalTravellerComponent* Traveller = Actor->FindComponentByClass<UPortalTravellerComponent>();
@@ -683,7 +688,7 @@ void APortalV2::HiddenComponentsUpdate()
         PortalCamera->HideComponent(LinkPortal->PortalPlane);
         PortalCamera->HideComponent(LinkPortal->PortalNearClipShell);
         PortalCamera->HideComponent(LinkPortal->PortalInner);
-    
+
     }
 
 }
@@ -736,7 +741,9 @@ bool APortalV2::TeleportPlayer(AActor* Actor, UPortalTravellerComponent* Travell
                 Controller->GetControlRotation().Quaternion();
 
             FQuat NewControlQuat = TransformRotation(OldControlQuat);
-
+            UE_LOG(LogTemp, Warning, TEXT("[Portal] OldVelocity=%s | NewVelocity=%s | OldView=%s | NewView=%s"),
+                *OldVelocity.ToString(), *NewVelocity.ToString(),
+                *OldControlQuat.Rotator().ToString(), *NewControlQuat.Rotator().ToString());
             Controller->SetControlRotation(NewControlQuat.Rotator());
         }
         FRotator Rotator(0.0, NewRotation.Rotator().Yaw, 0.0);
@@ -786,7 +793,7 @@ bool APortalV2::IsPointInsideOpening(const FVector& WorldPoint)
     FVector Relative = WorldPoint - GetPortalLocation();
 
     float LocalRight = FMath::Abs(FVector::DotProduct(Relative, GetActorRightVector()));
-   
+
     float LocalUp = FMath::Abs(FVector::DotProduct(Relative, GetActorUpVector()));
 
     return LocalRight <= PortalHalfSize.X + TravellerMargin && LocalUp <= PortalHalfSize.Y + TravellerMargin;
@@ -839,7 +846,7 @@ void APortalV2::CreatePortalRenderTargets()
     if (!GetWorld() || !bUseRecursion)
         return;
 
-    PortalRecurRenderTarget = UKismetRenderingLibrary::CreateRenderTarget2D(GetWorld(), RenderTargetWidth* RecursiveRenderScale, RenderTargetHeight* RecursiveRenderScale, ETextureRenderTargetFormat::RTF_RGBA16f);
+    PortalRecurRenderTarget = UKismetRenderingLibrary::CreateRenderTarget2D(GetWorld(), RenderTargetWidth * RecursiveRenderScale, RenderTargetHeight * RecursiveRenderScale, ETextureRenderTargetFormat::RTF_RGBA16f);
     if (PortalRecurRenderTarget)
     {
         PortalRecurRenderTarget->ClearColor = FLinearColor::Black;
@@ -895,6 +902,7 @@ bool APortalV2::CaptureNormal(FMinimalViewInfo& PlayerView)
     PortalRecurMaterialInstance->SetScalarParameterValue(TEXT("UseHistory"), 0.f);
     SetRecursionMaterial();
 
+    PreparePlayerCapture(true);
 
     PortalCamera->CaptureScene();
     RestorePortalRenderState();
@@ -904,7 +912,7 @@ bool APortalV2::CaptureNormal(FMinimalViewInfo& PlayerView)
 bool APortalV2::CaptureRecursive(FMinimalViewInfo& PlayerView)
 {
 
-    if (!PortalCamera  || !PortalRenderTarget || !PortalRecurMaterialInstance || !PortalRecurRenderTarget || !PortalRecurWriteTarget || !IsValid(LinkPortal))
+    if (!PortalCamera || !PortalRenderTarget || !PortalRecurMaterialInstance || !PortalRecurRenderTarget || !PortalRecurWriteTarget || !IsValid(LinkPortal))
     {
         InvalidatePortalHistory();
         return false;
@@ -920,7 +928,7 @@ bool APortalV2::CaptureRecursive(FMinimalViewInfo& PlayerView)
     FTransform V1View(V1Rotation, V1Location, FVector::OneVector);
     FTransform V2View(V2Rotation, V2Location, FVector::OneVector);
 
- 
+
     FPortalClipQuad CurrentHistoryFrontQuad;
     FPortalClipQuad CurrentHistoryBackQuad;
 
@@ -937,7 +945,7 @@ bool APortalV2::CaptureRecursive(FMinimalViewInfo& PlayerView)
 
     if (!SetHistoryMaterial(bUseHistory, CurrentHistoryBackQuad))
         InvalidatePortalHistory();
-    
+
     SetRecursionMaterial();
     SetDeepOverscanMapping(false);
 
@@ -949,7 +957,7 @@ bool APortalV2::CaptureRecursive(FMinimalViewInfo& PlayerView)
 
     PortalCamera->ClipPlaneBase = LinkPortal->GetPortalLocation() + LinkPortal->GetActorForwardVector().GetSafeNormal();
     PortalCamera->ClipPlaneNormal = LinkPortal->GetActorForwardVector().GetSafeNormal();
-
+    PreparePlayerCapture(false);
     PortalCamera->CaptureScene();
     PortalCamera->ShowFlags = SavedShowFlags;
 
@@ -966,12 +974,12 @@ bool APortalV2::CaptureRecursive(FMinimalViewInfo& PlayerView)
     PortalCamera->SetWorldLocationAndRotation(V1View.GetLocation(), V1View.GetRotation());
     PortalCamera->TextureTarget = PortalRenderTarget;
 
-
+    PreparePlayerCapture(true);
     PortalCamera->CaptureScene();
-    
+
     RestorePortalRenderState();
 
-  
+
     if (!bCurrentHistoryQuadsValid)
     {
         if (PortalHistory.bValid && HistoryInvalidFrames < HistoryInvalidGraceFrames)
@@ -986,7 +994,7 @@ bool APortalV2::CaptureRecursive(FMinimalViewInfo& PlayerView)
     HistoryInvalidFrames = 0;
     SavePortalHistory(CurrentHistoryFrontQuad);
     return true;
-    
+
 }
 
 bool APortalV2::ShouldCapture(FMinimalViewInfo& PlayerView)
@@ -1013,7 +1021,8 @@ bool APortalV2::ShouldCapture(FMinimalViewInfo& PlayerView)
 
 void APortalV2::UpdatePortalRender()
 {
-    
+
+    UpdateRenderTargetSize();
     APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(GetWorld(), 0);
 
     if (!CameraManager)
@@ -1023,25 +1032,25 @@ void APortalV2::UpdatePortalRender()
     }
 
     FMinimalViewInfo PlayerView = CameraManager->GetCameraCachePOV();
-    
+
     if (!ShouldCapture(PlayerView))
     {
-       
+
         InvalidatePortalHistory();
         return;
     }
-   
+
 
     if (bUseRecursion && IsRecursivePortalVisible(PlayerView)) {
         if (!CaptureRecursive(PlayerView))
             CaptureNormal(PlayerView);
-       
+
     }
     else
     {
         InvalidatePortalHistory();
         CaptureNormal(PlayerView);
-        
+
     }
 }
 void APortalV2::SetRecursionMaterial()
@@ -1071,10 +1080,10 @@ void APortalV2::RestorePortalRenderState()
 }
 void APortalV2::ResetPortalRenderHistory()
 {
-   
+
     if (PortalRenderTarget)
         UKismetRenderingLibrary::ClearRenderTarget2D(this, PortalRenderTarget, FLinearColor::Black);
-   
+
     if (PortalRecurRenderTarget)
     {
         UKismetRenderingLibrary::ClearRenderTarget2D(this, PortalRecurRenderTarget, FLinearColor::Black);
@@ -1086,7 +1095,7 @@ void APortalV2::ResetPortalRenderHistory()
     }
 
     InvalidatePortalHistory();
-    
+
     RestorePortalRenderState();
 }
 
@@ -1155,7 +1164,7 @@ bool APortalV2::IsClipQuadValid(FPortalClipQuad& Quad)
 
         if (Point.W <= KINDA_SMALL_NUMBER)
             return false;
-      
+
 
         MinX = FMath::Min(MinX, Point.X);
         MinY = FMath::Min(MinY, Point.Y);
@@ -1207,7 +1216,7 @@ bool APortalV2::SetHistoryMaterial(bool bUseHistory, FPortalClipQuad& CurrentBac
     FPortalHomography HistoryMatrix;
 
     if (!MakePortalHomography(CurrentBackQuad, PortalHistory.FrontQuad, HistoryMatrix)) {
-       
+
         return false;
     }
 
@@ -1383,14 +1392,14 @@ void APortalV2::SetDeepOverscanMapping(bool bEnable)
 
     if (PortalNearClipShellMaterialInstance)
     {
-    
+
         PortalNearClipShellMaterialInstance->SetScalarParameterValue(TEXT("UseDeepOverscanMapping"), UseMapping);
     }
 }
 
-bool APortalV2::IsPortalVisibleView(const FVector& Location,const FQuat& Rotation,const FMatrix& Matrix)
+bool APortalV2::IsPortalVisibleView(const FVector& Location, const FQuat& Rotation, const FMatrix& Matrix)
 {
-   
+
     FMatrix ViewProjection = MakeViewMatrix(Location, Rotation) * Matrix;
     FVector Center = GetPortalLocation();
     FVector Right = GetActorRightVector().GetSafeNormal() * PortalHalfSize.X;
@@ -1437,7 +1446,7 @@ bool APortalV2::IsPortalVisibleView(const FVector& Location,const FQuat& Rotatio
         bDown &= Y < -1.f;
     }
     return !(bLeft || bRight || bUp || bDown);
-   
+
 }
 
 bool APortalV2::IsPortalVisible(FMinimalViewInfo& PlayerView)
@@ -1459,7 +1468,7 @@ bool APortalV2::IsRecursivePortalVisible(FMinimalViewInfo& PlayerView)
     FMinimalViewInfo View = MakeCaptureView(PlayerView, PortalRenderTarget, 1.f);
 
     return IsPortalVisibleView(Location, Rotation, View.CalculateProjectionMatrix());
-   
+
 }
 
 void APortalV2::ApplyRecursiveShowFlags()
@@ -1475,6 +1484,71 @@ void APortalV2::ApplyRecursiveShowFlags()
     PortalCamera->ShowFlags.SetSceneColorFringe(false);
 
     PortalCamera->ShowFlags.SetScreenSpaceReflections(false);
+}
+
+void APortalV2::TestVisible()
+{
+
+    PortalNearClipShell->SetVisibility(tVisible);
+    PortalInner->SetVisibility(tVisible);
+    tVisible = !tVisible;
+}
+
+void APortalV2::PreparePlayerCapture(bool bFinalCapture)
+{
+    if (!IsValid(PortalCamera)) return;
+
+    APP3Character* Player = Cast<APP3Character>(UGameplayStatics::GetPlayerCharacter(GetWorld(), 0));
+    if (!IsValid(Player)) return;
+
+    // 원본의 1인칭 팔·총은 포탈 Capture에서 숨김
+    PortalCamera->HideComponent(Player->GetArmsMesh());
+    PortalCamera->HideComponent(Player->GetGunMesh());
+
+    UPortalTravellerComponent* Traveller = Player->FindComponentByClass<UPortalTravellerComponent>();
+    if (!IsValid(Traveller)) return;
+
+    ABodyClone* Clone = Cast<ABodyClone>(Traveller->GetCloneActor());
+    if (!IsValid(Clone) || Clone->IsHidden()) return;
+
+    // 현재 통과 중인 포탈의 최종 화면에서만 1인칭 Clone을 사용
+    Traveller->UpdateClone(Traveller->GetCloneSourcePortal());
+    bool bShowFirstPerson = bFinalCapture && Traveller->GetCloneSourcePortal() == this;
+
+    // Capture 직전에 원본의 최신 위치와 회전을 반영합니다.
+
+
+    Clone->SetCaptureVisibility(PortalCamera, bShowFirstPerson);
+}
+
+void APortalV2::UpdateRenderTargetSize()
+{
+    APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
+    if (!IsValid(PC) || !IsValid(PortalRenderTarget)) return;
+
+    int32 Width = 0;
+    int32 Height = 0;
+    PC->GetViewportSize(Width, Height);
+
+    if (Width <= 0 || Height <= 0) return;
+    if (PortalRenderTarget->SizeX == Width && PortalRenderTarget->SizeY == Height) return;
+
+    RenderTargetWidth = Width;
+    RenderTargetHeight = Height;
+
+    PortalRenderTarget->ResizeTarget(Width, Height);
+
+    const int32 InnerWidth = FMath::Max(1, FMath::RoundToInt(Width * RecursiveRenderScale));
+    const int32 InnerHeight = FMath::Max(1, FMath::RoundToInt(Height * RecursiveRenderScale));
+
+    if (IsValid(PortalRecurRenderTarget))
+        PortalRecurRenderTarget->ResizeTarget(InnerWidth, InnerHeight);
+
+    if (IsValid(PortalRecurWriteTarget))
+        PortalRecurWriteTarget->ResizeTarget(InnerWidth, InnerHeight);
+
+    // 크기를 바꾼 RenderTarget에는 이전 History를 그대로 사용할 수 없습니다.
+    InvalidatePortalHistory();
 }
 
 bool APortalV2::TeleportObjects(AActor* Actor, UPortalTravellerComponent* Traveller)
@@ -1493,7 +1567,7 @@ bool APortalV2::TeleportObjects(AActor* Actor, UPortalTravellerComponent* Travel
 
     FVector NewLocation = TransformPoint(OldLocation);
     FQuat NewRotation = TransformRotation(OldRotation);
-  
+
     bool bGrab = Traveller->GetGrabObject();
 
     FVector NewLinearVelocity = TransformVector(OldLinearVelocity);

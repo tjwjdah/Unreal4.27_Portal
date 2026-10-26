@@ -42,8 +42,13 @@ void APortalClone::UpdateClone(APortalV2* Portal)
 	SetActorScale3D(SourceActor->GetActorScale3D());
 }
 
+void APortalClone::ShowStart()
+{
+}
+
 void APortalClone::SetClip(APortalV2* Portal, bool bEnable)
 {
+
 	APortalV2* ClipPortal = IsValid(Portal) ? Portal->GetLinkPortal() : nullptr;
 
 	for (UMaterialInstanceDynamic* Material : CloneMaterials) {

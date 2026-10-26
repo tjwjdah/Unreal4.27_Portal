@@ -262,12 +262,12 @@ FPortalPlacementResult UPortalGunComponent::FindPortalSpot(APortalV2* TargetPort
 	}
 	*/
 	bool bSupported = PortalSupportCheck(CorrectSurfacePoint,PortalRotation,HitComponent,TargetPortal,OtherPortal);
-
+	
 	if (!bSupported)
 	{
 		return Result;
 	}
-
+	
 	bool bBlock = IsPortalBlock(CorrectSurfacePoint,PortalRotation,HitComponent,TargetPortal);
 
 	if (bBlock)
@@ -368,11 +368,93 @@ bool UPortalGunComponent::PortalInsidePlaceArea(UBoxComponent* PlaceArea, const 
 
 	return true;
 }
-
+/*
 bool UPortalGunComponent::PortalSupportCheck(const FVector& SurfacePoint, const FRotator& PortalRotation, UPrimitiveComponent* Surface, APortalV2* TargetPortal, APortalV2* OtherPortal)
 {
 	UWorld* World = GetWorld();
 
+	if (!World || !Surface)
+		return false;
+
+	FRotationMatrix Axes(PortalRotation);
+
+	FVector Forward = Axes.GetUnitAxis(EAxis::X);
+	FVector Right = Axes.GetUnitAxis(EAxis::Y);
+	FVector Up = Axes.GetUnitAxis(EAxis::Z);
+
+	float ProbeHalfWidth = PortalHalfSize.X - CheckGap;
+	float ProbeHalfHeight = PortalHalfSize.Y - CheckGap;
+
+	FCollisionQueryParams Params(NAME_None, true);
+	Params.bTraceComplex = true;
+
+	AActor* Owner = GetOwner();
+
+	if (Owner)
+		Params.AddIgnoredActor(Owner);
+	if (TargetPortal)
+		Params.AddIgnoredActor(TargetPortal);
+	if (OtherPortal)
+		Params.AddIgnoredActor(OtherPortal);
+
+	FVector2D ProbePoints[] =
+	{
+		FVector2D(0.f,  0.f),
+		FVector2D(-1.f, -1.f),
+		FVector2D(1.f, -1.f),
+		FVector2D(1.f,  1.f),
+		FVector2D(-1.f,  1.f),
+		FVector2D(0.f, -1.f),
+		FVector2D(1.f,  0.f),
+		FVector2D(0.f,  1.f),
+		FVector2D(-1.f,  0.f)
+	};
+
+	for (auto& Probe : ProbePoints)
+	{
+		FVector ProbePosition = SurfacePoint + Right * Probe.X * ProbeHalfWidth + Up * Probe.Y * ProbeHalfHeight;
+		FVector TraceStart = ProbePosition + Forward * CheckStartDistance;
+		FVector TraceEnd = ProbePosition - Forward * CheckDepth;
+
+		FHitResult Hit;
+
+		bool bHit = World->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_Visibility, Params);
+
+		if (!bHit)
+		{
+			DrawDebugLine(World, TraceStart, TraceEnd, FColor::Red, false, 2.0f, 0, 2.0f);
+			DrawDebugSphere(World, ProbePosition, 5.0f, 8, FColor::Red, false, 2.0f);
+			return false;
+		}
+
+		if (Hit.GetComponent() != Surface)
+		{
+			DrawDebugLine(World, TraceStart, Hit.ImpactPoint, FColor::Red, false, 2.0f, 0, 2.0f);
+			DrawDebugSphere(World, Hit.ImpactPoint, 5.0f, 8, FColor::Red, false, 2.0f);
+			return false;
+		}
+
+		float NormalDot = FVector::DotProduct(Hit.ImpactNormal.GetSafeNormal(), Forward);
+
+		if (NormalDot < MinNormalMatch)
+		{
+			DrawDebugLine(World, TraceStart, Hit.ImpactPoint, FColor::Red, false, 2.0f, 0, 2.0f);
+			DrawDebugSphere(World, Hit.ImpactPoint, 5.0f, 8, FColor::Red, false, 2.0f);
+			DrawDebugDirectionalArrow(World, Hit.ImpactPoint, Hit.ImpactPoint + Hit.ImpactNormal * 30.0f, 10.0f, FColor::Yellow, false, 2.0f, 0, 2.0f);
+			return false;
+		}
+
+		DrawDebugLine(World, TraceStart, Hit.ImpactPoint, FColor::Green, false, 2.0f, 0, 2.0f);
+		DrawDebugSphere(World, Hit.ImpactPoint, 5.0f, 8, FColor::Green, false, 2.0f);
+	}
+
+	return true;
+}
+*/
+bool UPortalGunComponent::PortalSupportCheck(const FVector& SurfacePoint, const FRotator& PortalRotation, UPrimitiveComponent* Surface, APortalV2* TargetPortal, APortalV2* OtherPortal)
+{
+	UWorld* World = GetWorld();
+	
 	if (!World || !Surface)
 		return false;
 
@@ -419,25 +501,103 @@ bool UPortalGunComponent::PortalSupportCheck(const FVector& SurfacePoint, const 
 		FHitResult Hit;
 
 		bool bHit = World->LineTraceSingleByChannel(Hit,TraceStart,TraceEnd,ECC_Visibility,Params);
-		
+	
 		if (!bHit)
 			return false;
-
+	
 		if (Hit.GetComponent() != Surface)
 			return false;
 
 		float NormalDot =FVector::DotProduct(Hit.ImpactNormal.GetSafeNormal(),Forward);
-
+	
 		if (NormalDot <MinNormalMatch)
 			return false;
 	}
+
 	return true;
 }
-
+/*
 bool UPortalGunComponent::IsPortalBlock(const FVector& SurfacePoint, const FRotator& PortalRotation, UPrimitiveComponent* Surface, APortalV2* TargetPortal)
 {
 	UWorld* World = GetWorld();
 
+	if (!World)
+		return true;
+
+	FRotationMatrix Axes(PortalRotation);
+	FVector Forward = Axes.GetUnitAxis(EAxis::X);
+
+	FVector BoxCenter = SurfacePoint + Forward * (FrontCheckDepth * 0.5f - PortalOffset);
+	FVector BoxHalfExtent(FrontCheckDepth * 0.5f, PortalHalfSize.X - FrontCheckGap, PortalHalfSize.Y - FrontCheckGap);
+
+	FCollisionQueryParams Params(NAME_None, true);
+	Params.bTraceComplex = true;
+
+	AActor* Owner = GetOwner();
+	if (Owner)
+		Params.AddIgnoredActor(Owner);
+
+	if (TargetPortal)
+		Params.AddIgnoredActor(TargetPortal);
+
+	if (Surface)
+		Params.AddIgnoredComponent(Surface);
+
+	TArray<FOverlapResult> Overlaps;
+
+	bool bBlockingOverlap = World->OverlapMultiByChannel(
+		Overlaps,
+		BoxCenter,
+		PortalRotation.Quaternion(),
+		ECC_Visibility,
+		FCollisionShape::MakeBox(BoxHalfExtent),
+		Params
+	);
+
+	bool bPortalBlocked = false;
+
+	if (bBlockingOverlap)
+	{
+		for (auto& Overlap : Overlaps)
+		{
+			UPrimitiveComponent* Component = Overlap.GetComponent();
+
+			if (!Component)
+				continue;
+
+			if (Component == Surface)
+				continue;
+
+			if (Component->ComponentHasTag(TEXT("PortalBlockBox")))
+				continue;
+
+			if (Overlap.bBlockingHit)
+			{
+				bPortalBlocked = true;
+				break;
+			}
+		}
+	}
+
+	DrawDebugBox(
+		World,
+		BoxCenter,
+		BoxHalfExtent,
+		PortalRotation.Quaternion(),
+		bPortalBlocked ? FColor::Red : FColor::Green,
+		false,
+		2.0f,
+		0,
+		2.0f
+	);
+
+	return bPortalBlocked;
+}
+*/
+bool UPortalGunComponent::IsPortalBlock(const FVector& SurfacePoint, const FRotator& PortalRotation, UPrimitiveComponent* Surface, APortalV2* TargetPortal)
+{
+	UWorld* World = GetWorld();
+	
 	if (!World)
 		return true;
 
@@ -464,7 +624,7 @@ bool UPortalGunComponent::IsPortalBlock(const FVector& SurfacePoint, const FRota
 	TArray<FOverlapResult> Overlaps;
 
 	bool bBlockingOverlap =World->OverlapMultiByChannel(Overlaps,BoxCenter,PortalRotation.Quaternion(),ECC_Visibility,FCollisionShape::MakeBox(BoxHalfExtent),Params);
-
+	
 	if (!bBlockingOverlap)
 		return false;
 	
@@ -535,17 +695,15 @@ bool UPortalGunComponent::FindGrabHit(FHitResult& OutHit, APortalV2*& OutHitPort
 		return false;
 	
 	APortalV2* HitPortal = Cast<APortalV2>(Hit.GetActor());
-	
 	if (!HitPortal || !(HitPortal->GetPortalPlane() == Hit.GetComponent())) {
 		OutHit = Hit;
 		return true;
 	}
-	
 	APortalV2* LinkPortal = HitPortal->GetLinkPortal();
 
 	if (!HitPortal->GetActive() || !IsValid(LinkPortal) || !LinkPortal->GetActive())
 		return false;
-	
+
 	float UsedDistance = FVector::Distance(ViewLocation, Hit.ImpactPoint);
 	float LeftDistance = GrabTraceDistance - UsedDistance;
 
@@ -874,6 +1032,11 @@ void UPortalGunComponent::FireStop()
 	}
 
 	DoOnce = true;
+}
+
+void UPortalGunComponent::portalvisibletest()
+{
+	InPortal->TestVisible();
 }
 
 

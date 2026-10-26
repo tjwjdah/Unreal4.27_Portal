@@ -1,60 +1,13 @@
-# =========================
-# Unreal Engine 4.27
-# C++ Source Only
-# =========================
+# Everything ignore
+*
 
-# Visual Studio
-.vs/
-*.sln
-*.suo
-*.opensdf
-*.sdf
-*.VC.db
-*.VC.opendb
-*.user
-*.userprefs
+# Keep gitignore
+!.gitignore
 
-# Build / Generated
-Binaries/
-Intermediate/
-DerivedDataCache/
-Saved/
+# Keep Config
+!Config/
+!Config/**
 
-# Unreal generated files
-*.generated.h
-*.gen.cpp
-
-# Unreal Asset Files
-*.uasset
-*.umap
-
-# Compiled / Binary Files
-*.dll
-*.exe
-*.pdb
-*.obj
-*.lib
-*.exp
-*.ilk
-*.ipch
-
-# Logs / Temporary
-*.log
-*.tmp
-*.temp
-*.bak
-*.cache
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Rider
-.idea/
-
-# VS Code
-.vscode/
-
-# Plugins - generated files
-Plugins/*/Binaries/
-Plugins/*/Intermediate/
+# Keep Source
+!Source/
+!Source/**

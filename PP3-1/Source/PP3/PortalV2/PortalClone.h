@@ -40,9 +40,12 @@ public:
 
 	virtual void SetSource(AActor* Actor) { SourceActor = Actor; }
 	virtual void UpdateClone(APortalV2* Portal);
+	virtual void ShowStart();
 	void SetClip(APortalV2* Portal, bool bEnable);
 
-	virtual void HideClear() {};
+	virtual void HideClear() {}
+
+	virtual void OutClone() {}
 	void AddCloneMaterial(UMaterialInstanceDynamic* Material);
 
 };

@@ -55,7 +55,7 @@ private:
 	APortalClone* CloneActor;
 
 	UPROPERTY(Transient)
-	APortalV2* ClonePortal;
+	APortalV2* CloneSourcePortal;
 
 	UPROPERTY(Transient)
 	TArray<UMaterialInstanceDynamic*> OriginalMaterials;
@@ -118,5 +118,8 @@ public:
 	bool IsInPortal(APortalV2* Portal) { return InPortals.Contains(Portal); }
 
 	void SetGrabObject(bool Grap) { bGrabObject = Grap; }
-	bool GetGrabObject() const { return bGrabObject; }
+	bool GetGrabObject() { return bGrabObject; }
+
+	APortalClone* GetCloneActor() { return CloneActor; }
+	APortalV2* GetCloneSourcePortal() { return CloneSourcePortal; }
 };

@@ -170,7 +170,7 @@ private:
     UPROPERTY(EditDefaultsOnly)
     bool bUseRecursion = true;
 
-   
+
 
 
     UPROPERTY(EditDefaultsOnly)
@@ -197,7 +197,7 @@ private:
     float HistoryOverscanScale = 1.15f;
 
     FPortalRenderTickFunction PortalRenderTick;
-        
+
 
     int32 HistoryInvalidFrames = 0;
 
@@ -207,7 +207,7 @@ private:
 
     UPROPERTY(EditDefaultsOnly)
     float RecursiveRenderScale = 0.75f;
-   
+
 protected:
     // Called when the game starts or when spawned
     virtual void BeginPlay() override;
@@ -220,7 +220,7 @@ public:
 
     void InitializePortalRenderTarget();
     void InitializePortalMaterials();
- 
+
 
 
     void ActivatePortal();
@@ -265,13 +265,13 @@ public:
 
     FVector2D GetPortalHalfSize() { return PortalHalfSize; }
     bool FindCrossPoint(const FVector& PreviousLocation, const FVector& CurrentLocation, FVector& OutPoint);
-   
+
     bool TeleportObjects(AActor* Actor, UPortalTravellerComponent* Traveller);
 
     bool TeleportPlayer(AActor* Actor, UPortalTravellerComponent* Traveller);
 
     void ClearTravellers();
-  
+
 
     bool IsTravellerBody(AActor* Actor, UPrimitiveComponent* Component);
 
@@ -289,10 +289,10 @@ public:
 
     void CreatePortalRenderTargets();
     void SetScreenTexture(UTexture* Texture);
-    
+
     bool CaptureNormal(FMinimalViewInfo& PlayerView);
     bool CaptureRecursive(FMinimalViewInfo& PlayerView);
-    
+
     bool ShouldCapture(FMinimalViewInfo& PlayerView);
 
     void UpdatePortalRender();
@@ -303,9 +303,9 @@ public:
     void RestorePortalRenderState();
     void ResetPortalRenderHistory();
 
-    
+
     bool CalculatePortalClipQuad(FMatrix& ViewProjectionMatrix, FPortalClipQuad& OutQuad);
-  
+
     bool IsClipQuadValid(FPortalClipQuad& Quad);
 
     bool SetHistoryMaterial(bool bUseHistory, FPortalClipQuad& CurrentBackQuad);
@@ -324,11 +324,18 @@ public:
     FMinimalViewInfo MakeCaptureView(FMinimalViewInfo& PlayerView, UTextureRenderTarget2D* Target, float OverscanScale);
 
     bool GetPortalQuads(const FTransform& FrontView, const FTransform& BackView, const FMatrix& ProjectionMatrix, FPortalClipQuad& OutFrontQuad, FPortalClipQuad& OutBackQuad);
-   
+
     void SetDeepOverscanMapping(bool bEnable);
     bool IsPortalVisibleView(const FVector& Location, const FQuat& Rotation, const FMatrix& Matrix);
     bool IsPortalVisible(FMinimalViewInfo& PlayerView);
     bool IsRecursivePortalVisible(FMinimalViewInfo& PlayerView);
 
     void ApplyRecursiveShowFlags();
+
+    bool tVisible = false;
+    void TestVisible();
+
+    void PreparePlayerCapture(bool bFinalCapture);
+
+    void UpdateRenderTargetSize();
 };

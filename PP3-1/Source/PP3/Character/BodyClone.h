@@ -7,6 +7,9 @@
 #include "GameFramework/Actor.h"
 #include "BodyClone.generated.h"
 
+class APlayerController;
+class USceneCaptureComponent2D;
+class APortalV2;
 UCLASS()
 class PP3_API ABodyClone : public APortalClone
 {
@@ -43,6 +46,13 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (AllowPrivateAccess = "true"))
 		UPhysicsHandleComponent* m_PhysicsHandle;
 
+
+		TSet<APortalV2*> InPortals;
+		UPROPERTY(Transient)
+		TWeakObjectPtr<APlayerController> HiddenPlayerController;
+
+		UPROPERTY(Transient)
+		TArray<TWeakObjectPtr<USceneCaptureComponent2D>> CaptureCameras;
 public:
 	// Sets default values for this actor's properties
 	ABodyClone();
@@ -51,6 +61,8 @@ protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
 	virtual void SetSource(AActor* Actor) override;
+	
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 public:
 	// Called every frame
 	virtual void Tick(float DeltaTime) override;
@@ -63,7 +75,12 @@ public:
 	UPhysicsHandleComponent* GetPhysicsHandle() { return m_PhysicsHandle; }
 	
 	USphereComponent* GetSphere2() { return m_Sphere2; }
-	virtual void UpdateClone(APortalV2* Portal);
-	virtual void HideClear();
+	virtual void UpdateClone(APortalV2* Portal)override;
+	virtual void HideClear()override;
+	virtual void OutClone() override;
+	virtual void ShowStart() override;
 	USceneComponent* GetGrabsocket() { return m_Grabsocket; }
+
+	void SetCaptureVisibility(USceneCaptureComponent2D* Capture, bool bShowFirstPerson);
+
 };

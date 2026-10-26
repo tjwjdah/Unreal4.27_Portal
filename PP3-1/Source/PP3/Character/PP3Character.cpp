@@ -100,6 +100,8 @@ void APP3Character::SetupPlayerInputComponent(class UInputComponent* PlayerInput
 	PlayerInputComponent->BindAction("Fire2", IE_Pressed, this, &APP3Character::RMousePressed);
 	PlayerInputComponent->BindAction("Change", IE_Pressed, this, &APP3Character::GunModeChange);
 	
+	PlayerInputComponent->BindAction("ResetVR", IE_Pressed, this, &APP3Character::portalvisibletest);
+	
 	PlayerInputComponent->BindAxis("MoveForward", this, &APP3Character::MoveForward);
 	PlayerInputComponent->BindAxis("MoveRight", this, &APP3Character::MoveRight);
 
@@ -128,6 +130,12 @@ void APP3Character::Tick(float DeltaTime)
 	
 	
 
+}
+
+void APP3Character::portalvisibletest()
+{
+	if (IsValid(PortalGunComponent))
+		PortalGunComponent->portalvisibletest();
 }
 
 

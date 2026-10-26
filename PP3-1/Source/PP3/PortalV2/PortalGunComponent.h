@@ -202,4 +202,10 @@ public:
 	bool FireLaser(const FPortalPlacementResult Result, EPortalType PortalType);
 
 	void FireStop();
+
+
+	void portalvisibletest();
+
+	APortalV2* GetInPortal() { return InPortal; };
+	APortalV2* GetOutPortal() { return OutPortal; };
 };
