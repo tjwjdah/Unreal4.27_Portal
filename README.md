@@ -1,230 +1,153 @@
-[Portal_README.md](https://github.com/user-attachments/files/31608349/Portal_README.md)
 # Portal System - Unreal Engine C++ 클라이언트 포트폴리오
 
 > Unreal Engine C++ 기반 1인칭 Portal 시스템 프로젝트입니다.  
-> 포탈 배치·충돌 통과·플레이어/물리 오브젝트 텔레포트·포탈 너머 Grab을 구현하고,  
-> **SceneCapture 기반 재귀 렌더링**, **History Homography Reprojection**, **Overscan**, **Ping-Pong RenderTarget**을 결합해 제한된 Capture 비용으로 깊은 재귀 화면을 구현했습니다.
+> 재귀가 필요한 포탈은 두 단계까지 새로 Capture하고, 더 깊은 부분은 **이전 프레임에 저장한 안쪽 화면(History)의 위치를 보정해 재사용**했습니다. 플레이어·물리 오브젝트의 통과와 포탈 너머 물체 Grab·Throw도 같은 좌표 변환을 기준으로 구현했습니다.
 
-## 영상
+---
 
-<!--
-<img width="1912" height="998" alt="Portal Demo" src="여기에 GitHub 이미지/GIF 주소" />
+## 시연 영상
 
-- [영상 링크](여기에 YouTube 링크)
--->
+<a href="https://youtu.be/VeI2WFhfKv0">
+  <img width="1936" height="1048" alt="ScreenShot00040" src="https://github.com/user-attachments/assets/7428b141-4c46-476f-a6b1-67cf8e904d31" />
+</a>
 
-시연 영상에서는 포탈 설치, 플레이어/물리 오브젝트 통과, 포탈 너머 Grab, 재귀 렌더링과 카메라 이동·회전 시 History 안정성을 보여줍니다.
+▶ [전체 시연 영상](https://youtu.be/VeI2WFhfKv0)
 
 ---
 
 <a id="table-of-contents"></a>
+
 ## 목차
 
 - [1. 프로젝트 개요](#overview)
 - [2. 핵심 기술 요약](#tech-summary)
 - [3. 시스템 구조](#system-architecture)
 - [4. 핵심 기술 상세](#core-tech)
-  - [4.1 포탈 배치 보정과 표면 검증](#portal-placement)
-  - [4.2 포탈 표면 Hole 표현과 선택적 충돌 통과](#portal-surface-collision)
-  - [4.3 플레이어·물리 오브젝트 텔레포트와 Clone](#portal-traveller)
-  - [4.4 포탈 너머 Grab / Throw](#portal-grab)
-  - [4.5 제한된 SceneCapture 기반 재귀 렌더링](#recursive-rendering)
-  - [4.6 Homography 기반 History UV Reprojection](#history-reprojection)
-  - [4.7 History Coverage 문제와 V2 Overscan](#history-overscan)
-  - [4.8 SceneCapture 타이밍과 렌더링 최적화](#capture-optimization)
+  - [4.1 포탈 배치 - 설치 영역과 9곳의 표면 검사](#portal-placement)
+  - [4.2 포탈 근접 렌더링 - 평면 잘림과 벽 노출 해결](#portal-nearclip)
+  - [4.3 재귀 렌더링 - 2회 Capture와 History](#recursive-rendering)
+  - [4.4 SceneCapture 최적화와 갱신 순서](#capture-optimization)
+  - [4.5 포탈 통과 시 충돌 처리](#portal-surface-collision)
+  - [4.6 텔레포트와 Clone](#portal-teleport-clone)
+  - [4.7 포탈 너머 Grab / Throw](#portal-grab)
 - [5. 코드 구조](#code-structure)
-- [6. 최종 렌더 설정 및 검증 포인트](#render-settings)
+- [6. 공통 측정 환경](#measurement-method)
 - [7. 설계상 트레이드오프](#tradeoffs)
-- [8. 한 줄 요약](#one-line-summary)
-
-//4.3 과 4.5는 좀 덜중요한 부분이니깐 마지막쯤으로
 
 ---
 
 <a id="overview"></a>
+
 ## 1. 프로젝트 개요
 
-| 항목 | 내용 |
-|---|---|
-| 프로젝트명 | Portal System |
-| 장르 | 1인칭 퍼즐 / Portal 기술 데모 |
-| 엔진 | Unreal Engine C++ 4.27 |
-| 개발 형태 | 개인 프로젝트 |
-| 담당 영역 | 포탈 배치, 렌더링, 재귀 화면, 텔레포트, 충돌 처리, Clone, Grab 시스템 |
-| 핵심 목표 | Portal게임의 Portal 기능 구현 |
+| 항목    | 내용                                          |
+| ----- | ------------------------------------------- |
+| 프로젝트명 | Portal System                               |
+| 장르    | 1인칭 퍼즐 / Portal 기술 데모                       |
+| 엔진 / 언어 | Unreal Engine 4.27 / C++                    |
+| 담당 영역 | 포탈 배치, 렌더링, 재귀 화면, 충돌 처리, 텔레포트, Clone, Grab |
+| 핵심 목표 | 두 포탈 사이의 렌더링·이동·물리 상호작용을 연결하고, 재귀 렌더링까지 구현한 Portal 시스템     |
+| 개발 인원 | 1명                                          |
+| 개발 기간 | 3~4개월                                       |
+
 
 ### 프로젝트 방향
 
-처음에는 두 포탈 사이의 위치·회전 변환과 SceneCapture 화면 출력부터 구현했습니다. 이후 실제 게임 플레이에 사용할 수 있도록 포탈 설치 가능 영역 검사, 벽 충돌 통과, 플레이어와 물리 오브젝트 텔레포트, Clone 기반 절단 표현, 포탈 너머 Grab을 추가했습니다.
+두 포탈 사이로 화면과 플레이어, 물리 오브젝트가 이어지도록 만드는 데 초점을 맞췄습니다. 
 
-렌더링 쪽에서는 서로 마주 보는 포탈이 논리적으로 무한히 반복되는 문제를 해결하기 위해, 현재 프레임의 실제 SceneCapture는 V1/V2 두 단계까지만 계산하고 그보다 깊은 영역은 이전 프레임의 가장 깊은 결과를 History로 재사용하는 구조를 만들었습니다.
-
-이 과정에서 단순 History 재사용으로 인한 이전 프레임 잔상 누적, History RenderTarget Read/Write 충돌, 카메라 회전 시 History Coverage 부족, Camera Update 시점 차이 같은 문제를 순서대로 해결했습니다.
+근접 시 화면이 잘리는 문제, 입구 주변의 충돌, 재귀 화면의 잔상과 Capture 비용을 각각 확인하고 개선했습니다.
 
 ---
 
 <a id="tech-summary"></a>
+
 ## 2. 핵심 기술 요약
 
 | 핵심 기술 | 설명 |
 |---|---|
-| Portal Transform | Source Portal 좌표계를 Destination Portal 좌표계로 변환해 위치·방향·회전·속도를 유지합니다. |
-| 배치 영역 보정 | Portal의 회전된 크기를 PlaceArea 축에 투영해 벽 경계를 넘지 않는 중심 위치로 Clamp합니다. |
-| Surface Support Probe | 포탈 중앙·모서리·변 9지점을 LineTrace해 동일 표면과 Normal이 충분히 유지되는지 검사합니다. |
-| 선택적 충돌 통과 | Traveller가 포탈 Trigger 안에 있을 때 해당 PortalSurface의 Collision Channel만 Ignore하고 기존 Response를 저장·복원합니다. |
-| Traveller Clone + Clip | 포탈 양쪽에 원본/Clone을 동시에 배치하고 Material Clip Plane으로 포탈 평면을 기준으로 잘라 보이게 합니다. |
-| Portal Through Grab | 첫 LineTrace가 포탈을 맞으면 Ray를 연결 포탈 좌표계로 변환해 한 번 더 Trace하고 PhysicsHandle Target도 포탈 좌표계로 변환합니다. |
-| 2-Step Recursive Capture | 현재 프레임에서는 V2 Overscan Capture와 V1 Normal Capture, 총 2회의 SceneCapture만 수행합니다. |
-| History Homography | 현재 `BackQuad`에서 이전 프레임 `FrontQuad`로 가는 3×3 Homography를 만들어 History Texture를 재투영합니다. |
-| Ping-Pong History | `PortalRecurRenderTarget` / `PortalRecurWriteTarget`을 Read / Write로 분리하고 프레임 끝에 포인터를 Swap합니다. |
-| V2 Overscan | 가장 깊은 V2를 넓은 FOV로 Capture해 현재 재귀 화면과 다음 프레임 History Coverage를 동시에 확보합니다. |
-| Capture Culling | 거리, Portal 방향, 화면 가시성, 재귀 포탈 가시성에 따라 0 / 1 / 2회 Capture 경로를 선택합니다. |
-| PostUpdateWork Render Tick | 플레이어 Camera 갱신 이후 별도 Tick에서 Portal Render를 수행해 한 프레임 시점 차이로 인한 화면 흔들림을 줄였습니다. |
+| 포탈 배치 | 포탈 크기·회전·여백을 고려해 설치 범위 안으로 중심을 보정했습니다. 이후 9곳을 Trace해 같은 Mesh와 비슷한 표면 방향인지 확인했습니다. |
+| 근접 렌더링 | 가까이 가거나 통과할 때 화면이 잘리는 문제를 입구가 열린 상자형 보조 Mesh로 보완했습니다. 틈으로 드러나는 벽은 Material에서 포탈 영역만 숨겼습니다. |
+| 재귀 렌더링 | 재귀가 필요한 포탈 하나당 한 프레임에 2회 Capture하고, 더 깊은 부분은 Homography로 History의 위치를 보정해 사용했습니다. |
+| SceneCapture 최적화와 갱신 순서 | 거리와 시야 범위로 Capture 여부를 정하고, 안쪽 화면은 해상도와 일부 렌더 효과를 줄였습니다. 카메라 갱신 뒤에 Capture하도록 순서도 맞췄습니다. |
+| 포탈 통과 시 충돌 처리 | 벽과 바닥·천장에 맞는 충돌 설정을 두고, 통과 대상이 해당 표면의 채널을 잠시 무시하도록 했습니다. 입구 주변은 작은 충돌 박스로 막고, Trigger에서 나가면 원래 설정으로 복구했습니다. |
+| 텔레포트와 Clone | 입구 범위 안에서 포탈 평면을 넘으면 위치·방향·속도를 반대편 기준으로 변환해 텔레포트했습니다. 통과 중에는 반대편에 Clone을 표시해 하나의 물체가 양쪽 포탈에 걸쳐 있는 것처럼 보이도록 했습니다. |
+| 포탈 너머 Grab / Throw | 포탈을 맞히면 Trace의 위치와 방향을 반대편 기준으로 변환해 남은 거리를 이어 검사했습니다. 이를 통해 포탈 너머의 물체를 잡거나 던질 수 있게 했습니다. |
 
-
-//이부분 너무 많고 
-
-### 핵심 렌더링 흐름
-
-```mermaid
-flowchart LR
-    Player[Player Camera] --> V1[Portal Transform → V1]
-    V1 --> V2[Portal Transform → V2]
-
-    HistoryRead[Previous History Read RT] --> Reproject[BackQuad → Previous FrontQuad Homography]
-    Reproject --> V2Capture[V2 Overscan Capture]
-    V2 --> V2Capture
-
-    V2Capture --> WriteRT[History Write RT]
-    WriteRT --> V1Capture[V1 Normal Capture]
-    V1 --> V1Capture
-    V1Capture --> MainRT[Portal RenderTarget]
-
-    WriteRT --> Swap[Swap Read / Write]
-    Swap --> HistoryRead
-```
-
-재귀 화면은 무한 SceneCapture가 아니라 **현재 프레임의 제한된 실제 재귀 + 이전 프레임 History를 이용한 깊은 재귀 근사** 구조입니다.
-
-//이부분 좀 만 더 자세히 예를 들면 HistoryRead[Previous History Read RT] --> Reproject[BackQuad → Previous FrontQuad Homography]이부분가지고 재귀화면 쓴다는 느낌으로 잘표현되게
 ---
 
 <a id="system-architecture"></a>
+
 ## 3. 시스템 구조
 
 ```mermaid
 flowchart TD
-    Player[APP3Character] --> Gun[UPortalGunComponent]
-    Player --> Traveller[UPortalTravellerComponent]
-    Player --> PhysicsHandle[UPhysicsHandleComponent]
+    Player["APP3Character"] --> Gun["UPortalGunComponent"]
+    Player --> Traveller["UPortalTravellerComponent"]
+    Player --> Handle["UPhysicsHandleComponent"]
 
-    Gun --> InPortal[APortalV2 - In]
-    Gun --> OutPortal[APortalV2 - Out]
-    InPortal <--> OutPortal
+    Gun --> Portals["Portal A ↔ Portal B"]
+    Gun --> Surface["UPortalSurfaceComponent"]
+    Gun --> Handle
 
-    Gun --> Surface[UPortalSurfaceComponent]
-    Surface --> PlaceArea[PortalPlaceArea Box]
-    Surface --> SurfaceMID[Surface Material Hole Parameters]
+    Portals --> Render["포탈별 SceneCapture2D와 RenderTarget · History"]
+    Portals --> Traveller
+    Traveller --> Clone["APortalClone"]
 
-    InPortal --> Capture[SceneCaptureComponent2D]
-    OutPortal --> Capture
-    Capture --> MainRT[PortalRenderTarget]
-    Capture --> RecurRT[History Read / Write RT]
-
-    Traveller --> Collision[Surface Collision Ignore / Restore]
-    Traveller --> Clone[APortalClone]
-    Clone --> StaticClone[APortalStaticClone]
-    Clone --> BodyClone[ABodyClone]
-
-    Gun --> GrabTrace[Portal Through LineTrace]
-    GrabTrace --> PhysicsHandle
+    Surface --> Area["포탈 설치 영역 · PlaceArea"]
+    Surface --> MID["벽 Mesh의 Dynamic Material Instance"]
 ```
 
-`UPortalGunComponent`는 설치와 Grab을 담당하고, `APortalV2`는 포탈 연결·텔레포트·SceneCapture·History를 관리합니다. `UPortalTravellerComponent`는 플레이어와 물리 오브젝트의 공통 통과 상태, 충돌 Response, 속도, Clone을 관리하도록 역할을 분리했습니다.
+| 클래스 | 역할 |
+|---|---|
+| `APP3Character` | 이동·시점과 포탈 발사, Grab·Throw 입력 전달 |
+| `UPortalGunComponent` | 설치 후보 검사, 두 포탈 관리, PhysicsHandle을 이용한 Grab·Throw |
+| `APortalV2` | 포탈 간 좌표 변환, 통과 판정, 화면 Capture와 History 관리 |
+| `UPortalTravellerComponent` | 통과 대상의 이전 위치, 충돌 응답, Clone과 원본의 부분 숨김 처리 관리 |
+| `APortalClone` / 파생 클래스 | 반대편에 보여줄 캐릭터·물체의 모습 갱신 |
+| `UPortalSurfaceComponent` | 설치할 표면과 설치 영역 조회, 표면별 Dynamic Material Instance와 벽 숨김 정보 관리 |
 
 ---
 
 <a id="core-tech"></a>
+
 ## 4. 핵심 기술 상세
 
 <a id="portal-placement"></a>
-### 4.1 포탈 배치 보정과 표면 검증
 
-#### 문제
+### 4.1 포탈 배치 - 설치 영역과 9곳의 표면 검사
 
-LineTrace의 `ImpactPoint`에 포탈 중심을 그대로 배치하면 포탈 일부가 벽 밖으로 튀어나오거나, 서로 다른 면이 만나는 모서리·얇은 벽·장애물이 있는 위치에도 설치될 수 있습니다.
+#### 문제 1 - 벽 가장자리에 설치하면 포탈 일부가 벽 밖으로 나감
 
-단순히 Hit 지점 하나만 검사하는 것으로는 **180 × 260cm 크기의 포탈 전체가 실제로 같은 표면 위에 올라가는지** 확인할 수 없었습니다.
+처음에는 포탈을 설치할 표면을 LineTrace로 찾고, 맞힌 지점인 `ImpactPoint`에 포탈을 놓았습니다. 
 
-#### 구현
+벽 중앙에서는 괜찮았지만 가장자리에서는 포탈 일부가 벽 밖으로 나왔습니다. 포탈의 크기가 **180 × 260cm**여서, 중심뿐 아니라 전체가 들어갈 공간을 확인해야 했습니다.
 
-포탈 설치는 다음 단계로 나눴습니다.
+#### 1차 개선 - PlaceArea를 이용한 위치 보정
 
-```text
-Player Camera LineTrace
-    ↓
-PortalSurfaceComponent 확인
-    ↓
-Hit Normal과 PlaceArea Forward 비교
-    ↓
-Portal 회전 계산
-    ↓
-PortalInsidePlaceArea()로 중심 위치 보정
-    ↓
-PortalSupportCheck() 9-Point 표면 검사
-    ↓
-IsPortalBlock() 전방 공간 Overlap 검사
-    ↓
-설치 확정
-```
+벽·바닥·천장에 <strong>포탈을 설치할 수 있는 Box 영역(PlaceArea)</strong>을 지정했습니다. 
 
-#### PlaceArea 내부 보정
+포탈의 크기와 회전, 여백을 고려해 중심을 놓을 수 있는 범위를 구하고, 가장자리를 맞히면 그 범위 안의 가장 가까운 위치로 보정했습니다.
 
-`PortalInsidePlaceArea()`는 포탈이 항상 PlaceArea와 같은 회전이라고 가정하지 않습니다.
+#### 문제 2 - 실제 Mesh의 형태를 확인하지 못함
 
-Portal Right / Up이 PlaceArea Right / Up에 얼마나 투영되는지 계산해, 회전된 Portal이 차지하는 실제 Half Extent를 구합니다.
+설치 영역으로 위치를 맞춰도, 가운데 구멍이 있거나 외곽이 사각형이 아닌 Mesh에서는 포탈 일부가 허공에 걸치는 문제가 있었습니다. Box 범위만 확인하다 보니 그 안에 실제 표면이 없는 부분까지는 걸러내지 못했습니다.
 
-```text
-RequiredHalfY
-= |PortalRight · AreaRight| × PortalHalfWidth
-+ |PortalUp · AreaRight| × PortalHalfHeight
-+ EdgeMargin
+#### 2차 개선 - 9-Point Surface Probe
 
-RequiredHalfZ
-= |PortalRight · AreaUp| × PortalHalfWidth
-+ |PortalUp · AreaUp| × PortalHalfHeight
-+ EdgeMargin
-```
+이를 보완하기 위해 포탈 중앙과 네 모서리·네 변 중앙 부근의 **총 9곳에서 표면 방향으로 다시 Trace**했습니다. 
 
-그 뒤 Hit 위치를 PlaceArea 로컬 Y/Z로 변환하고 가능한 범위로 Clamp합니다.
+`TraceComplex`를 켜고, 모든 지점이 처음 맞힌 것과 같은 Mesh Component를 맞히는지 확인했습니다. 표면 방향인 `Normal`도 비슷한 경우에만 다음 검사로 넘어갔습니다.
 
-즉 벽 가장자리를 맞혔다고 바로 실패시키는 것이 아니라, **포탈 전체가 들어갈 수 있는 가장 가까운 유효 중심 위치로 보정**합니다.
+| 벽 가장자리에서 설치 위치 보정 | 표면에 구멍이 있는 위치의 설치 차단 |
+|---|---|
+| <img width="426" height="240" alt="2" src="https://github.com/user-attachments/assets/88c3367c-8f5a-4bae-98a1-2783323e0836" /> | <img width="426" height="240" alt="1" src="https://github.com/user-attachments/assets/8d2ffe87-659f-48d5-b728-f3ff2b084f72" /> |
 
-#### 9-Point Surface Probe
+#### 추가 검사 - 기존 포탈과의 겹침 확인
 
-보정된 중심만 유효하다고 판단하지 않고, 중앙·모서리·각 변 중앙 총 9개 지점에서 표면 뒤쪽으로 LineTrace를 수행합니다.
-
-각 Probe는:
-
-- 동일한 `Surface` Component를 맞혀야 함
-- Hit Normal과 Portal Forward의 Dot이 `MinNormalMatch` 이상이어야 함
-
-조건을 만족해야 설치를 허용합니다.
-
-이 검사로 벽 모서리, 표면 단절, 다른 오브젝트 위에 일부가 걸치는 경우를 막았습니다.
-
-#### 전방 장애물 검사
-
-`IsPortalBlock()`은 포탈 앞쪽 깊이 영역에 Box Overlap을 수행해 Portal이 열릴 공간에 다른 Blocking Component가 있는지 확인합니다.
-
-표면 자체와 Portal 전용 Block Box는 제외하고, 실제 Blocking Hit가 남으면 설치를 거부합니다.
-
-<!-- 이미지 추천: 벽 가장자리 발사 → 자동 Clamp / 모서리 설치 실패 / 장애물 앞 설치 실패 3장 -->
-
-#### 관련 코드
+마지막으로 설치 위치에서 Box 형태로 겹침을 검사하고, 기존 포탈과 겹치면 설치하지 않도록 했습니다.
 
 <details>
-<summary>코드 파일 / 함수 목록 보기</summary>
+<summary>관련 코드 위치</summary>
 
 ```text
 PP3/PortalV2/PortalGunComponent.h
@@ -237,249 +160,431 @@ UPortalGunComponent::PortalSupportCheck
 UPortalGunComponent::IsPortalBlock
 UPortalGunComponent::FirePortal
 ```
+
+</details>
+
+---
+
+<a id="portal-nearclip"></a>
+
+### 4.2 포탈 근접 렌더링 - 평면 잘림과 벽 노출 해결
+
+#### 문제 1 - 포탈에 가까이 가거나 통과할 때 벽 내부나 너머가 보임
+
+처음에는 반대편 시점에서 Capture한 화면을 <strong>포탈의 평면 Mesh(PortalPlane)</strong>에 표시했습니다. 어느 정도 떨어져 있을 때는 괜찮았지만, 가까이 가거나 비스듬히 통과하면 포탈 화면 대신 벽 내부나 너머가 보였습니다.
+
+원인을 확인해 보니, 카메라의 렌더링 범위에서 가장 가까운 경계면인 Near Plane이 포탈 평면 뒤쪽까지 넘어가고 있었습니다. 이 경계보다 카메라에 가까워진 평면 일부가 잘리면서 그 뒤쪽이 드러났습니다.
+
+| 벽 너머가 보이는 문제 |
+|---|
+| <img width="426" height="240" alt="3" src="https://github.com/user-attachments/assets/7a41609a-d627-428a-81d1-bc96d4176e6a" /> |
+
+#### 해결 방안 검토
+
+| 방법 | 검토 결과 |
+|---|---|
+| Near Plane 거리 축소 | 설정만 바꾸면 되지만, 통과 중 포탈 평면을 넘어가는 문제까지 해결하지는 못함 |
+| 포탈 뒤에 평면 추가 | 같은 화면을 보여줄 면을 쉽게 추가할 수 있지만, 그 평면까지 잘리면 문제가 반복됨 |
+| 포탈 뒤쪽을 감싸는 상자형 보조 Mesh | 전용 Mesh가 필요하지만, 기존 Capture 결과로 뒤쪽과 옆쪽을 함께 채울 수 있어 선택 |
+
+#### 1차 개선 - 입구가 열린 상자형 보조 Mesh 추가
+
+<strong>포탈 뒤쪽을 감싸는 상자형 보조 Mesh(PortalNearClipShell)</strong>를 추가했습니다. 기존 평면을 가리지 않도록 입구 쪽은 열어뒀습니다.
+
+보조 Mesh의 Material에도 같은 RenderTarget을 연결했습니다. 깊이가 있는 형태라 기존 평면이 잘려도 렌더링 범위에 남은 옆면과 안쪽 면에서 포탈 화면을 이어 보여줄 수 있었습니다.
+
+#### 문제 2 - 평면 Mesh와 보조 Mesh 사이로 벽이 보임
+
+보조 Mesh를 추가한 뒤에도 비스듬한 각도에서는 평면 Mesh와 보조 Mesh 사이로 원래 벽이 얇게 보였습니다. 포탈 화면 안에 회색 선이 끼어 있는 것처럼 보이는 문제가 남았습니다.
+
+| 보조 Mesh와 포탈 평면 사이로 보이는 벽 틈 |
+|---|
+| <img width="426" height="240" alt="4" src="https://github.com/user-attachments/assets/bfad6f53-a8d0-4e47-bcc3-19599222ea07" /> |
+
+#### 해결 방안 검토
+
+| 방법 | 검토 결과 |
+|---|---|
+| 평면과 보조 Mesh의 위치 조정 | 추가 기능 없이 조정할 수 있지만, 다른 각도에서 벽이 다시 보일 수 있음 |
+| 벽 Mesh 직접 절단 | 실제 구멍을 만들 수 있지만, 작업 범위도 크고 포탈을 옮길 때마다 새 구멍을 만들고 이전 부분도 복구해야 함 |
+| Material에서 포탈 영역 숨김 | 벽마다 Material Instance 관리가 필요하지만, 기존 Mesh를 유지할 수 있어 선택 |
+
+#### 2차 개선 - Wall Mask
+
+<strong>벽 Material에서 포탈이 설치된 영역만 보이지 않게 하는 처리(Wall Mask)</strong>를 추가했습니다. 포탈의 중심과 방향, 가로·세로·깊이 범위를 전달하고, 그 범위 안에 있는 벽 픽셀을 숨겼습니다.
+
+여러 벽이 같은 Dynamic Material Instance를 쓰면 포탈 정보도 공유돼 다른 벽까지 숨겨질 수 있었습니다. 그래서 **표면별로 Dynamic Material Instance를 만들고, 해당 표면에 설치된 포탈 정보만 전달**했습니다. 같은 표면에 두 포탈을 설치할 수 있도록 두 포탈의 정보도 각각 관리했습니다.
+
+| 보조 Mesh와 Wall Mask 적용 |
+|---|
+| <img width="426" height="240" alt="5" src="https://github.com/user-attachments/assets/e01cdd85-2f5f-44a1-9d24-9fc307a2cd1a" /> |
+
+<details>
+<summary>관련 코드 위치</summary>
+
+```text
+PP3/PortalV2/PortalV2.h
+PP3/PortalV2/PortalV2.cpp
+PP3/PortalV2/PortalSurfaceComponent.h
+PP3/PortalV2/PortalSurfaceComponent.cpp
+
+PortalNearClipShell
+APortalV2::PlaceSurface
+APortalV2::AddSurfaceHole
+UPortalSurfaceComponent::SetPortalHole
+UPortalSurfaceComponent::ClearPortalHole
+UPortalSurfaceComponent::UpdatePortalMaterial
+```
+
+</details>
+
+---
+
+<a id="recursive-rendering"></a>
+
+### 4.3 재귀 렌더링 - 2회 Capture와 History
+
+#### 문제 1 - 마주 보는 포탈 안쪽에 잔상이 남음
+
+처음에는 포탈 하나당 한 번만 Capture했습니다. 두 포탈을 마주 보게 놓으면 화면 안에 다시 포탈이 보이는데, 이 안쪽 포탈에는 직전 Capture 결과가 그대로 들어갔습니다. 카메라가 가만히 있을 때는 크게 티가 나지 않았지만, 움직이면 과거 화면이 안쪽에 남아 잔상처럼 보였습니다.
+
+
+이를 줄이려면 안쪽 화면도 새로 Capture해야 했지만, 보이는 깊이만큼 전부 갱신하면 한 프레임에 필요한 Capture 횟수가 계속 늘어났습니다.
+
+| 마주 보는 포탈 안쪽에 남는 잔상 |
+|---|
+| <img width="426" height="240" alt="6" src="https://github.com/user-attachments/assets/2967cd7b-e420-40f8-b913-26153b2f2378" /> |
+
+#### 1차 개선 - 두 단계까지 새로 Capture하고 History의 위치 보정
+
+현재 화면에 새로 반영할 재귀 깊이는 두 단계로 제한했습니다. 안쪽 화면이 먼저 준비돼야 하므로 다음 순서로 Capture했습니다.
+
+1. **포탈을 두 번 통과한 시점**으로 카메라의 위치와 방향을 변환해 안쪽 재귀 화면을 Capture합니다.
+2. 그 결과를 안쪽 포탈에 넣고, **포탈을 한 번 통과한 시점**에서 최종 포탈 화면을 Capture합니다.
+
+그보다 깊은 부분에는 **이전 프레임에 저장한 재귀 화면(History)을** 사용했습니다. 다만 이전 카메라 위치에서 만든 화면이라, 그대로 넣으면 현재 포탈의 위치와 모양에 맞지 않았습니다.
+
+그래서 현재의 깊은 재귀 시점에서 포탈 네 모서리를 화면 좌표로 구한 뒤, History와 함께 저장한 기준 모서리와 대응시켰습니다. 이 관계로 **Homography를 계산해 Material에 전달하고, History를 읽는 UV를 바꿔** 현재 포탈에 맞춰 보이도록 했습니다.
+
+#### 문제 2 - 카메라를 돌리면 History에 필요한 부분이 없음
+
+카메라를 빠르게 돌리면 보정한 UV가 History의 Capture 범위를 벗어났습니다. History에 담기지 않은 부분이라, 위치만 맞춰서는 화면을 채울 수 없었습니다.
+
+| 카메라 회전 시 History의 Capture 범위 부족 |
+|---|
+| <img width="426" height="240" alt="Video Project 44" src="https://github.com/user-attachments/assets/717a151b-a7fd-43c3-99ff-921f376854c2" /> |
+
+#### 해결 방안 검토
+
+| 방법 | 검토 결과 |
+|---|---|
+| 화면을 읽는 위치를 가장자리로 제한 | 범위 밖에서도 색은 읽을 수 있지만, 가장자리 색이 길게 늘어나 보여 제외 |
+| History용 카메라 방향 고정 | 플레이어가 시점을 돌려도 History를 Capture하는 방향은 유지했지만, 일반 포탈 화면과 기준이 달라지고 근접 시에도 불안정해 실험 후 제외 |
+| 안쪽 화면을 더 넓게 Capture | 다음 프레임의 카메라 이동에 필요한 주변 화면을 미리 담을 수 있어 선택 |
+
+#### 2차 개선 - 넓게 Capture한 화면을 현재·다음 프레임에 함께 사용
+
+안쪽 화면은 <strong>FOV를 넓혀 주변까지 더 담는 방식(Overscan)</strong>으로 Capture했습니다. 이 결과를 최종 화면에 넣을 때는 중앙의 필요한 부분을 읽어 크기를 맞췄습니다.
+
+처음에는 안쪽 화면, 최종 화면, History용 화면을 따로 Capture해 총 3회가 필요했습니다. 이후 넓게 Capture한 안쪽 화면을 현재 재귀 화면과 다음 프레임 History에 함께 사용하면서 **재귀가 필요한 포탈 하나당 프레임별 Capture를 3회에서 2회로 줄였습니다.**
+
+최종 화면용 RenderTarget과 별개로, 안쪽 재귀 화면을 담을 RenderTarget 두 장을 사용했습니다. 한 장에서 History를 읽는 동안 다른 한 장에 새 화면을 Capture하고, 갱신이 끝나면 읽기·쓰기 역할을 바꿨습니다. 이렇게 사용 중인 History를 덮어쓰지 않으면서, 새 결과를 별도 복사 없이 다음 프레임에 사용했습니다.
+
+#### 측정 결과
+
+| 전체 Capture 횟수/프레임 | 평균 GPU 프레임 시간(ms) |
+|---:|---:|
+| 3회 | 15.832 |
+| 2회 | 14.231 |
+
+History를 별도로 Capture하는 3회 방식과 안쪽 화면을 History로 재사용하는 2회 방식을 비교했습니다. Capture를 한 번 줄이면서, 이 장면의 평균 GPU 프레임 시간은 **15.832ms에서 14.231ms로 약 10.1% 감소**했습니다.
+
+| 2회 Capture와 History를 적용한 재귀 렌더링 |
+|---|
+| <img width="426" height="240" alt="Video Project 44 (1)" src="https://github.com/user-attachments/assets/e2dde97c-f9a4-43a8-90c6-e4d23147a52d" /> |
+
+<details>
+<summary>관련 코드 위치</summary>
+
+```text
+PP3/PortalV2/PortalV2.h
+PP3/PortalV2/PortalV2.cpp
+
+APortalV2::CaptureRecursive
+APortalV2::CalculatePortalClipQuad
+APortalV2::GetPortalQuads
+APortalV2::MakePortalHomography
+APortalV2::SetHistoryHomography
+APortalV2::SetHistoryMaterial
+APortalV2::MakeCaptureView
+APortalV2::SetDeepOverscanMapping
+APortalV2::SavePortalHistory
+APortalV2::InvalidatePortalHistory
+```
+
+</details>
+
+---
+
+<a id="capture-optimization"></a>
+
+### 4.4 SceneCapture 최적화와 갱신 순서
+
+#### 개선 시도 - Capture 간격을 늘리자 화면이 늦게 따라옴
+
+처음에는 화면에서 보이는 크기에 따라 Capture 주기를 바꿨습니다.
+
+```text
+크게 보임 → 매 프레임
+중간     → 2프레임마다
+작게 보임 → 4프레임마다
+```
+
+하지만 작게 보이는 포탈도 카메라를 돌릴 때 화면이 늦게 따라와, 이 방식은 사용하지 않았습니다.
+
+너무 작게 보이면 Capture를 아예 생략하는 방법도 시도했지만, 먼 거리나 비스듬한 각도에서 필요한 포탈 화면까지 끊겼습니다.
+
+#### 최종 Capture 판단
+
+그래서 화면에 보이는 크기 대신 **두 포탈의 활성 상태와 거리, 포탈의 앞뒤와 시야 범위**로 Capture 여부를 판단했습니다. 활성 상태와 최대 거리 조건을 먼저 확인하고, 가까운 포탈은 앞뒤·시야 검사를 생략해 근접 시 화면이 끊기는 것을 막았습니다.
+
+| 상황 | 포탈 하나당 프레임별 Capture 횟수 |
+|---|---:|
+| 앞의 Capture 조건을 통과하지 못함 | 0회 |
+| Capture 대상이며, 재귀를 끄거나 안쪽 포탈이 시야 범위에 없음 | 1회 |
+| Capture 대상이며, 재귀를 켜고 안쪽 포탈도 시야 범위에 있음 | 2회 |
+
+안쪽 포탈은 카메라를 한 번 변환한 시점에서 네 모서리를 화면 좌표로 바꿔, 시야 범위에 들어올 수 있는지 확인했습니다.
+
+##### 측정 결과
+
+두 포탈이 화면에 보이지 않는 상태에서, 시점을 고정하고 Capture 조건 검사 적용 전후를 비교했습니다.
+
+| Capture 조건 검사 | 전체 Capture 횟수/프레임 | 평균 GPU 프레임 시간(ms) |
+|---|---:|---:|
+| 미적용 | 2회 | 12.756 |
+| 적용 | 0회 | 7.085 |
+
+조건 검사를 적용해 불필요한 Capture 2회를 생략하면서, 이 장면의 평균 GPU 프레임 시간이 **12.756ms에서 7.085ms로 약 44.5% 감소**했습니다.
+
+#### 안쪽 화면의 해상도와 렌더 효과 줄이기
+
+플레이어가 직접 보는 최종 포탈 화면은 해상도를 유지하고, 안쪽 재귀 화면의 해상도를 줄였습니다.
+
+| 화면 | 해상도 기준 | 1920 × 1080 화면 기준 |
+|---|---|---|
+| 최종 포탈 화면 | 플레이어 화면 크기에 맞춰 갱신 | 1920 × 1080 |
+| 안쪽 재귀 화면 / History | 최종 화면의 가로·세로 각각 75% | 1440 × 810 |
+
+안쪽 화면을 Capture할 때는 초점 흐림과 렌즈 효과, 화면 기반 반사 등 일부 효과도 껐고, 최종 화면을 Capture하기 전에는 원래 설정으로 복구했습니다.
+
+##### 측정 결과
+
+최종 포탈 화면을 1920 × 1080으로 유지하고, 같은 재귀 장면에서 안쪽 화면의 해상도와 추가 렌더 효과 제한을 바꿔 비교했습니다. 전체 Capture는 모든 조건에서 프레임당 2회로 유지했습니다.
+
+| 안쪽 화면 해상도 | 추가 렌더 효과 제한 | 평균 GPU 프레임 시간(ms) |
+|---|---|---:|
+| 1920 × 1080 (100%) | 없음 | 15.943 |
+| 1440 × 810 (가로·세로 각각 75%) | 없음 | 14.498 |
+| 1440 × 810 (가로·세로 각각 75%) | 적용 | 14.487 |
+
+안쪽 화면의 가로·세로를 각각 75%로 줄이면서, 이 장면의 평균 GPU 프레임 시간이 **15.943ms에서 14.498ms로 약 9.1% 감소**했습니다. 추가 렌더 효과 제한의 차이는 작아, 이번 테스트에서는 해상도 축소에 따른 개선을 주로 확인했습니다.
+
+
+#### 추가 수정 - 카메라를 돌릴 때 포탈 화면이 밀림
+
+재귀 화면을 구현하던 중, 카메라를 빠르게 돌리면 포탈 화면이 조금 밀렸다가 돌아오는 문제도 있었습니다. History를 끄고 일반 Capture만 남겨도 증상은 같았습니다.
+
+확인해 보니 포탈 Capture가 플레이어 카메라 갱신보다 먼저 실행될 수 있어, 화면 갱신을 별도 Tick으로 분리했습니다. **카메라 갱신 뒤에 실행되도록 `TG_PostUpdateWork`에 두고, `CameraManager`에 저장된 위치와 방향을 읽어 Capture**하면서 화면 밀림을 해결했습니다. 텔레포트 판정은 기존 Tick에 유지했습니다.
+
+| 카메라 회전 시 화면 밀림 개선 전후 |
+|---|
+| <img width="240" height="300" alt="Video Project 47" src="https://github.com/user-attachments/assets/07b69b2f-fc32-4cf7-b52f-b73121514ed2" /> |
+
+<details>
+<summary>관련 코드 위치</summary>
+
+```text
+PP3/PortalV2/PortalV2.h
+PP3/PortalV2/PortalV2.cpp
+
+APortalV2::ShouldCapture
+APortalV2::IsPortalVisibleView
+APortalV2::IsRecursivePortalVisible
+APortalV2::CaptureNormal
+APortalV2::CreatePortalRenderTargets
+APortalV2::UpdateRenderTargetSize
+APortalV2::ApplyRecursiveShowFlags
+APortalV2::UpdatePortalRender
+APortalV2::RegisterActorTickFunctions
+FPortalRenderTickFunction::ExecuteTick
+```
+
 </details>
 
 ---
 
 <a id="portal-surface-collision"></a>
-### 4.2 포탈 표면 Hole 표현과 선택적 충돌 통과
 
-#### 문제
+### 4.5 포탈 통과 시 충돌 처리
 
-포탈을 벽에 붙이는 것만으로는 플레이어가 벽 Collision에 막혀 실제로 통과할 수 없습니다.
+#### 문제 - 포탈 주변의 벽이나 바닥까지 통과함
 
-반대로 벽 Collision 전체를 꺼버리면 Portal Aperture 바깥에서도 벽을 통과할 수 있고, 다른 Actor에도 영향을 줄 수 있습니다.
+처음에는 플레이어나 물체가 포탈 입구의 Trigger에 들어오면 해당 표면의 충돌 채널에 대한 응답을 잠시 `Ignore`로 바꾸고, 빠져나오면 복구하도록 만들었습니다.
 
-#### 구현 방향
+하지만 같은 채널의 충돌을 통째로 무시하면서 포탈 주변의 바닥까지 뚫렸습니다. 벽에서도 캐릭터의 Capsule 일부만 Trigger에 걸치면 충돌 무시가 시작돼, 입구 밖에 남은 부분까지 벽을 통과하는 문제가 생겼습니다.
 
-이 프로젝트에서는 Runtime Mesh Boolean으로 실제 벽 Collision에 구멍을 뚫지 않고, **시각적 Hole과 Traveller의 물리 Collision 처리를 분리**했습니다.
+| 포탈 주변의 벽과 바닥까지 통과하는 문제 |
+|---|
+| <img width="426" height="240" alt="Video Project 49" src="https://github.com/user-attachments/assets/fba36a8d-0b1e-43d6-8be5-4b37689b5145" /> |
 
-##### 시각적 Hole
+#### 해결 방안 검토
 
-`UPortalSurfaceComponent`는 In / Out Portal 두 개의 Hole 정보를 별도로 관리합니다.
+| 방법 | 검토 결과 |
+|---|---|
+| 표면을 3×3 충돌 구역으로 나누기 | 가운데만 비우는 방식으로 구현했지만, 바닥·천장에서 시점에 따라 회전하는 포탈에 고정 구역을 맞추기 어려워 제외 |
+| 표면의 충돌 형상을 직접 자르기 | 구현이 복잡하고 재설치할 때마다 충돌 형상을 다시 만들고 이전 위치도 복구해야 해 제외 |
+| 작은 충돌 박스와 표면별 설정 사용 | 박스 배치와 충돌 설정을 관리해야 하지만, 기존 표면을 유지하면서 주변을 막을 수 있어 선택 |
 
-각 Hole은:
+#### 1차 개선 - 포탈 주변에 작은 충돌 박스 추가
 
-```text
-Center
-Forward
-Right
-Up
-HalfWidth / HalfHeight / HalfDepth
-Enabled
-```
+원래 표면의 충돌을 무시하는 동안 입구 주변을 막기 위해, 처음에는 큰 충돌 박스 몇 개를 배치했습니다. 하지만 두 포탈을 가까이 설치하면 한쪽 박스가 다른 포탈의 입구까지 막는 문제가 생겼습니다.
 
-값을 Surface의 Dynamic Material Instance에 전달합니다.
+그래서 <strong>입구 주변을 막는 작은 충돌 박스(PortalBlock)</strong>로 나누고, **다른 포탈 입구와 겹치는 박스만 충돌을 끄도록** 했습니다. 포탈을 옮길 때는 두 포탈의 박스를 다시 켠 뒤 겹치는 부분을 확인했습니다.
 
-따라서 같은 표면에 In / Out Portal 상태를 각각 켜고 끌 수 있습니다.
+| 입구 주변 충돌 박스와 겹침 처리 |
+|---|
+| <img width="320" height="240" alt="Video Project 49 (1)" src="https://github.com/user-attachments/assets/a7619708-898f-4f2e-adde-54f1659da6a9" /> |
 
-##### 물리 Collision 통과
+#### 2차 개선 - 표면에 맞는 충돌 설정과 원래 상태 복구
 
-`UPortalTravellerComponent`가 Portal Trigger에 들어오면 현재 PortalSurface의 Collision Object Channel을 수집하고, Traveller를 구성하는 Primitive Component들의 기존 Response를 저장한 뒤 해당 Channel만 `Ignore`로 변경합니다.
+벽과 바닥·천장 Mesh에는 각각 맞는 충돌 설정을 미리 해 두었습니다. 코드에서는 포탈이 설치된 Mesh의 충돌 채널을 읽고, Trigger에 들어온 대상이 해당 채널을 잠시 무시하도록 했습니다.
 
-```text
-Portal Trigger 진입
-    ↓
-현재 Surface Collision Channel 확인
-    ↓
-Primitive별 기존 Response 저장
-    ↓
-해당 Channel만 Ignore
-    ↓
-Portal 통과
-    ↓
-Trigger 종료 후 기존 Response 복원
-```
-
-초기에는 단순히 Ignore → Block으로 되돌리는 방식도 검토했지만, 원래 Response가 Block이 아닐 수 있기 때문에 최종 코드에서는 `FSavedPortalCollision`에 Primitive / Channel / 기존 Response를 저장해 정확히 복구하도록 보완했습니다.
-
-또 Portal Actor 둘레에는 여러 개의 `PortalBlock` Box를 두어 Traveller가 Surface Channel을 Ignore하는 동안에도 Aperture 바깥쪽으로 빠져나가는 것을 제한합니다.
-
-#### 트레이드오프
-
-이 방식은 실제 Collision Mesh에 동적으로 구멍을 생성하는 방식보다 구현과 갱신 비용이 단순합니다. 대신 **Portal Trigger 안에서 특정 Surface Channel을 일시적으로 무시하는 방식**이므로, 표면 Collision Channel 설계와 Portal Block 영역을 함께 관리해야 합니다.
-
-<!-- 이미지 추천: Portal Surface Material Hole + Collision Debug Box -->
-
-#### 관련 코드
+나올 때 변경한 채널의 응답을 무조건 `Block`으로 바꾸면 원래 `Overlap`이었던 Component의 설정까지 달라질 수 있었습니다. 그래서 **변경 전에 Component·채널별 원래 응답을 저장하고, Trigger에서 나가면 그 값으로 복구**했습니다.
 
 <details>
-<summary>코드 파일 / 함수 목록 보기</summary>
+<summary>관련 코드 위치</summary>
 
 ```text
-PP3/PortalV2/PortalSurfaceComponent.h
-PP3/PortalV2/PortalSurfaceComponent.cpp
 PP3/PortalV2/PortalTravellerComponent.h
 PP3/PortalV2/PortalTravellerComponent.cpp
 PP3/PortalV2/PortalV2.cpp
+PP3/PortalV2/PortalSurfaceComponent.cpp
+PP3/PortalV2/PortalGunComponent.cpp
 
-UPortalSurfaceComponent::SetPortalHole
-UPortalSurfaceComponent::ClearPortalHole
-UPortalSurfaceComponent::UpdatePortalMaterial
+APortalV2::OnPortalTriggerBegin
+APortalV2::OnPortalTriggerEnd
+APortalV2::IsTravellerBody
+APortalV2::AllPortalBlocksBlockOn
+
 UPortalTravellerComponent::EnterPortal
+UPortalTravellerComponent::ExitPortal
 UPortalTravellerComponent::UpdatePortalCollisionResponse
 UPortalTravellerComponent::RestorePortalCollisionResponse
-APortalV2::AddSurfaceHole
-APortalV2::AllPortalBlocksBlockOn
+
+UPortalSurfaceComponent::GetSurfaceCollisionChannel
+UPortalGunComponent::FirePortal
+UPortalGunComponent::PortalBoxComponentsCheck
 ```
+
 </details>
 
 ---
 
-<a id="portal-traveller"></a>
-### 4.3 플레이어·물리 오브젝트 텔레포트와 Clone
+<a id="portal-teleport-clone"></a>
 
-#### Portal Transform
+### 4.6 텔레포트와 Clone
 
-포탈 통과 시 Source Portal의 Forward / Right / Up 축을 기준으로 입력 Vector를 로컬 성분으로 분해한 뒤, Destination Portal의 반대 방향 축으로 다시 조합합니다.
+#### 포탈에 걸쳐 있는 모습 표시
 
-```text
-World Vector
-    ↓
-Source Portal Local Coordinate
-    ↓
-Destination Portal Basis + 180° 방향 전환
-    ↓
-Transformed Vector
-```
+포탈 입구의 Trigger에 들어오면 반대편에 원본과 같은 모습의 `Clone`을 보여줬습니다. Clone은 원본의 모습과 움직임을 따라가게 하고, 원본과 Clone의 Material에서 포탈 평면을 기준으로 불필요한 부분을 숨겼습니다. 이렇게 하나의 물체가 양쪽에 걸쳐 있는 것처럼 보이도록 했습니다.
 
-같은 변환 규칙을 위치, 방향, 회전, 속도에 공통으로 사용합니다.
+| 상태 | 들어간 포탈 쪽 | 나온 포탈 쪽 |
+|---|---|---|
+| 텔레포트 전 | 원본의 아직 넘어가지 않은 부분 | Clone의 넘어간 부분 |
+| 텔레포트 후 | Clone의 아직 남아 있는 부분 | 이동한 원본의 나온 부분 |
 
-#### 통과 판정
+Trigger에서 완전히 빠져나오면 Clone을 숨기고 원본 전체가 보이도록 복구했습니다. Clone은 처음 필요할 때 생성해 재사용하고, 표시용이므로 충돌은 껐습니다.
 
-Traveller는 이전 프레임 위치 `PreLocation`과 현재 위치를 저장합니다.
+물체 Clone은 물리 시뮬레이션도 끄고, 캐릭터 Clone은 Master Pose로 원본의 애니메이션 포즈를 따라가게 했습니다.
 
-Portal Plane의 앞쪽에서 뒤쪽으로 넘어갔는지 Dot Product로 검사하고, 선분과 Portal Plane이 만나는 `CrossingPoint`가 실제 Aperture 내부인지 한 번 더 확인한 뒤 텔레포트합니다.
+#### 추가 개선 - 시점에 따른 1인칭 팔·총 표시
 
-```text
-PreviousSide > 0
-CurrentSide <= 0
-    ↓
-Portal Plane Crossing Point 계산
-    ↓
-Portal HalfSize 내부인지 확인
-    ↓
-Teleport
-```
+캐릭터에는 1인칭 화면용 팔·총과 외부에서 보이는 몸체·총을 따로 뒀습니다. 그런데 Clone의 1인칭 팔·총을 포탈 Capture에서 숨기면 통과 중 총이 끊겨 보였고, 그대로 표시하면 다른 각도에서 몸체와 맞지 않는 팔·총이 보였습니다.
 
-단순 Trigger 진입만으로 이동시키지 않기 때문에 Portal 앞에서 옆으로 스쳐 지나가는 경우를 줄였습니다.
+| 1인칭 팔·총이 잘못 보이거나 끊기는 문제 |
+|---|
+| <img width="560" height="240" alt="Video Project 51" src="https://github.com/user-attachments/assets/11c25f13-1403-4db5-9f1c-efa254a365f8" /> |
 
-#### 플레이어
+이를 해결하기 위해 Capture 직전에 표시할 Mesh를 구분해, **현재 통과 중인 포탈의 최종 Capture에서는 1인칭 팔·총을, 반대편 포탈과 안쪽 재귀 Capture에서는 몸체·총을 표시**했습니다. 플레이어가 월드를 직접 보는 화면에서도 Clone의 1인칭 팔·총은 숨겨, 출구 쪽에 따로 드러나지 않도록 했습니다.
 
-플레이어는:
+| 시점별 팔·총 표시 개선과 포탈 통과 |
+|---|
+| <img width="560" height="240" alt="Video_Project_56_under_10MB" src="https://github.com/user-attachments/assets/d1f972e6-5aff-4d56-8bb4-8092a8aa3fac" /> |
 
-- 위치
-- Controller Control Rotation
-- Character Yaw
-- CharacterMovement Velocity
+#### 실제 텔레포트 판정
 
-를 연결 Portal 기준으로 변환합니다.
+Trigger에 들어왔다고 바로 텔레포트하지는 않았습니다. 캐릭터는 Capsule 중심, 물리 오브젝트는 질량 중심의 이전·현재 위치를 비교했습니다.
 
-출구에서는 변환된 속도 방향으로 `ExitOffset`을 적용해 출구 평면에 다시 걸리는 현상을 줄였습니다.
+포탈 앞에서 뒤로 넘어갔다면 두 위치를 잇는 선과 포탈 평면의 교차점을 구했습니다. **그 점이 입구 범위 안일 때만** 위치·방향·이동 속도를 반대편 기준으로 변환해 텔레포트하고, 물리 오브젝트는 회전 속도도 함께 변환했습니다. 캐릭터는 시점 방향을 변환하되 몸체에는 Yaw만 적용해 세워진 상태를 유지했습니다.
 
-#### 물리 오브젝트
-
-`PortalObject` Tag가 붙은 Primitive를 Teleport 기준 Component로 사용합니다.
-
-물리 오브젝트는:
-
-- Component Location / Rotation
-- Linear Velocity
-- Angular Velocity
-
-를 모두 Portal Transform한 뒤 `TeleportPhysics`로 이동하고 속도를 다시 적용합니다.
-
-#### Clone + Plane Clip
-
-오브젝트가 Portal을 절반만 통과한 순간에는 원본 하나만 이동시키면 한쪽 Portal에서 갑자기 사라지는 문제가 생깁니다.
-
-이를 위해 Traveller가 Portal Trigger에 들어오면 반대편에 Clone을 생성하고 Portal Transform으로 위치를 동기화합니다.
-
-원본과 Clone Material에는 `ClipPoint`, `ClipNormal`, `ClipOn`을 전달해 Portal Plane을 기준으로 서로 반대쪽 부분만 보이도록 처리했습니다.
-
-- `APortalStaticClone`: Static Mesh 기반 물리 오브젝트 Clone
-- `ABodyClone`: Player Skeletal Mesh 기반 Clone
-
-<!-- 이미지 추천: 큐브가 절반 통과한 장면 / 플레이어 Body Clone 장면 -->
-
-#### 관련 코드
+| 물체의 Clone 표시와 텔레포트 |
+|---|
+| <img width="426" height="240" alt="Video Project 57" src="https://github.com/user-attachments/assets/8b4158c1-e949-4c38-ba62-804d99b03b83" /> |
 
 <details>
-<summary>코드 파일 / 함수 목록 보기</summary>
+<summary>관련 코드 위치</summary>
 
 ```text
-PP3/PortalV2/PortalV2.h
 PP3/PortalV2/PortalV2.cpp
-PP3/PortalV2/PortalTravellerComponent.h
 PP3/PortalV2/PortalTravellerComponent.cpp
-PP3/PortalV2/PortalClone.h
-PP3/PortalV2/PortalClone.cpp
-PP3/PortalV2/PortalStaticClone.h
-PP3/PortalV2/PortalStaticClone.cpp
-PP3/Character/BodyClone.h
-PP3/Character/BodyClone.cpp
+PP3/PortalV2/PortalClone.h/.cpp
+PP3/PortalV2/PortalStaticClone.h/.cpp
+PP3/Character/BodyClone.h/.cpp
 
+APortalV2::AddTraveller
+APortalV2::FindCrossPoint
+APortalV2::IsPointInsideOpening
+APortalV2::PreparePlayerCapture
 APortalV2::TransformPoint
 APortalV2::TransformVector
 APortalV2::TransformRotation
-APortalV2::FindCrossPoint
+APortalV2::PortalTeleport
 APortalV2::TeleportPlayer
 APortalV2::TeleportObjects
-UPortalTravellerComponent::GetPhysicsData
-UPortalTravellerComponent::SetPhysicsData
+
 UPortalTravellerComponent::ShowClone
+UPortalTravellerComponent::UpdateClone
 UPortalTravellerComponent::SetOriginalClip
+ABodyClone::UpdateAnim
+ABodyClone::SetCaptureVisibility
 ```
+
 </details>
 
 ---
 
 <a id="portal-grab"></a>
-### 4.4 포탈 너머 Grab / Throw
 
-#### 문제
+### 4.7 포탈 너머 Grab / Throw
 
-일반 PhysicsHandle Grab은 Player Camera에서 대상까지 한 공간 안에서만 LineTrace하면 됩니다.
+일반 Trace는 포탈 표면에서 끝나서, 화면에 보이는 반대편 물체를 바로 잡을 수 없었습니다. 그래서 연결된 활성 포탈의 평면 Mesh를 맞히면 **맞힌 지점과 진행 방향을 출구 기준으로 변환하고, 남은 거리로 한 번 더 Trace**해 물체를 찾았습니다.
 
-하지만 포탈 너머의 물체를 잡으려면:
+찾은 물체는 PhysicsHandle로 잡아 목표 위치를 따라오게 했습니다. 포탈 너머에서 잡고 있다면 목표 위치도 출구 기준으로 변환했습니다. 던질 때도 시선 방향을 같은 방식으로 변환한 뒤 물체를 놓고 그 방향으로 힘을 가했습니다.
 
-```text
-Player Ray
-→ Portal Hit
-→ 연결 Portal에서 Ray 계속 진행
-→ Object Hit
-```
+잡고 있는 도중 플레이어나 물체가 포탈을 통과할 수 있어, 텔레포트 알림을 받아 잡는 기준을 바꿨습니다.
 
-처럼 Ray와 Grab Target 모두 Portal Transform을 거쳐야 합니다.
+| 텔레포트한 대상 | 처리 |
+|---|---|
+| 잡고 있던 물체 | 포탈을 거쳐 잡는 상태를 갱신하고, PhysicsHandle을 풀었다가 새 질량 중심에서 다시 연결 |
+| 플레이어 | 포탈을 거쳐 잡는 상태를 갱신하고, 이동한 플레이어를 기준으로 목표 위치를 다시 계산 |
 
-#### 구현
-
-`FindGrabHit()`에서 첫 Trace가 일반 물체를 맞히면 그대로 사용하고, 활성화된 Portal Plane을 맞힌 경우 남은 Trace 거리를 계산합니다.
-
-그 뒤:
-
-- Hit Point를 연결 Portal 위치로 `TransformPoint`
-- View Direction을 `TransformVector`
-- 연결 Portal 쪽에서 남은 거리만큼 두 번째 LineTrace
-
-를 수행합니다.
-
-현재 구현은 **한 번의 Portal 통과 Trace**를 지원합니다.
-
-#### PhysicsHandle Target 변환
-
-포탈 너머 물체를 잡은 상태에서는 Player의 `GrabSocket` 위치를 그대로 Target으로 사용하지 않고, `GrabPortal->TransformPoint(TargetLocation)`으로 반대 공간에 변환합니다.
-
-Player 또는 Grabbed Object 자체가 Portal을 통과하면 `OnPortalTeleport` Delegate로 현재 Grab 관계를 다시 계산하고 PhysicsHandle을 재연결합니다.
-
-던지기 방향 역시 Portal 너머에서 잡고 있다면 `TransformVector`를 적용합니다.
-
-<!-- 이미지 추천: 포탈 너머 큐브 Grab → Player 이동 → 큐브 통과 → Throw -->
-
-#### 관련 코드
+| 포탈 너머 물체 잡기와 잡은 상태로 통과 |
+|---|
+| <img width="426" height="240" alt="Video Project 60" src="https://github.com/user-attachments/assets/e3fd1bad-759d-4789-8e6d-45cd5a9d135c" /> |
 
 <details>
-<summary>코드 파일 / 함수 목록 보기</summary>
+<summary>관련 코드 위치</summary>
 
 ```text
 PP3/PortalV2/PortalGunComponent.h
@@ -493,610 +598,75 @@ UPortalGunComponent::OnGrabObjectTeleport
 UPortalGunComponent::ResetGrabAfterTeleport
 UPortalGunComponent::GrabLaunch
 ```
-</details>
 
----
-
-<a id="recursive-rendering"></a>
-### 4.5 제한된 SceneCapture 기반 재귀 렌더링
-
-#### 문제
-
-서로 마주 보는 두 포탈은 논리적으로 다음처럼 끝없이 이어집니다.
-
-```text
-V1
-└─ V2
-   └─ V3
-      └─ V4
-         └─ ...
-```
-
-하지만 각 단계마다 SceneCapture를 추가하면 재귀 깊이에 비례해 렌더링 비용이 증가합니다.
-
-#### 최종 구조
-
-최종 `PortalV2` 코드는 `RecursionCount` 배열을 순회하는 구조가 아니라, 현재 프레임에서 사용할 V1 / V2 View를 직접 계산하는 **고정 2단계 재귀 구조**입니다.
-
-```text
-PlayerView
-    ↓ Portal Transform 1회
-V1
-    ↓ Portal Transform 1회
-V2
-```
-
-재귀 화면이 필요한 프레임에는:
-
-```text
-1. V2 Overscan → PortalRecurWriteTarget Capture
-2. V1 Normal   → PortalRenderTarget Capture
-```
-
-총 2번의 `CaptureScene()`만 수행합니다.
-
-V2보다 깊은 영역은 이전 프레임 History를 재투영해서 사용합니다.
-
-#### 첫 프레임과 이후 프레임
-
-History가 없을 때는 가장 깊은 Portal 영역에서 `RecurFallbackColor`를 사용합니다.
-
-```text
-Frame 1
-V1
-└─ V2
-   └─ Fallback
-```
-
-History가 쌓인 이후에는 이전 프레임의 가장 깊은 결과 안에 이미 더 이전 History가 포함되어 있기 때문에 화면상으로 더 깊은 재귀가 이어집니다.
-
-```text
-Frame 2
-V1
-└─ V2
-   └─ Frame 1 History
-
-Frame 3
-V1
-└─ V2
-   └─ Frame 2 History
-      └─ Frame 1 History
-```
-
-따라서 이 프로젝트의 재귀는 **완전한 무한 재귀 렌더링이 아니라, 제한된 실제 재귀 + Temporal History를 이용한 무한 재귀 근사**입니다.
-
-#### SceneCapture Clip Plane
-
-Portal Camera는 `bEnableClipPlane`을 사용하고 연결 Portal의 위치와 Forward를 Clip Plane으로 설정합니다.
-
-이를 통해 연결 Portal 뒤쪽의 불필요한 Geometry가 Portal 화면에 섞이지 않도록 잘라냅니다.
-
-#### 관련 코드
-
-<details>
-<summary>코드 파일 / 함수 목록 보기</summary>
-
-```text
-PP3/PortalV2/PortalV2.h
-PP3/PortalV2/PortalV2.cpp
-
-APortalV2::CaptureNormal
-APortalV2::CaptureRecursive
-APortalV2::SetCameraProjection
-APortalV2::MakeCaptureView
-APortalV2::SetRecursionMaterial
-APortalV2::RestorePortalRenderState
-```
-</details>
-
----
-
-<a id="history-reprojection"></a>
-### 4.6 Homography 기반 History UV Reprojection
-
-#### 처음 발생한 문제: Temporal Feedback
-
-초기에는 이전 `PortalRenderTarget` 또는 재귀용 RenderTarget을 다음 프레임의 가장 깊은 Portal Texture로 그대로 재사용하는 방식으로 접근했습니다.
-
-카메라가 정지해 있을 때는 그럴듯했지만 이동하면:
-
-```text
-현재 화면
-└─ 이전 프레임 화면
-   └─ 더 이전 프레임 화면
-      └─ ...
-```
-
-처럼 과거 화면이 안쪽에 남아 Ghosting과 화면 누적이 발생했습니다.
-
-History를 사용하더라도 **현재 프레임에서 Portal이 차지하는 화면 위치와 이전 History 안의 Portal 위치를 맞춰서 다시 샘플링**해야 했습니다.
-
-#### Quad 계산
-
-V1과 V2 각각에서 Portal 네 꼭짓점을 ViewProjection Matrix로 Screen UV에 투영합니다.
-
-최종 코드 기준으로 History에 사용하는 Quad는:
-
-```text
-CurrentHistoryFrontQuad = V1에서 계산한 Portal Screen Quad
-CurrentHistoryBackQuad  = V2에서 계산한 Portal Screen Quad
-```
-
-입니다.
-
-현재 프레임의 가장 깊은 Portal 영역인 `CurrentHistoryBackQuad`를 이전 프레임에 저장해 둔 `PortalHistory.FrontQuad`로 재투영합니다.
-
-#### 3×3 Homography
-
-최종 구현은 Inverse Bilinear 수식을 직접 푸는 방식이 아니라, **Unit Square ↔ Screen Quad 사이의 Projective Homography**를 구성합니다.
-
-```text
-CurrentMatrix : Unit Square → Current BackQuad
-HistoryMatrix : Unit Square → Previous FrontQuad
-```
-
-현재 Screen UV를 Unit Square 좌표로 되돌린 뒤 같은 좌표를 이전 History Quad로 보내기 위해:
-
-```text
-HistoryHomography
-= HistoryMatrix × inverse(CurrentMatrix)
-```
-
-를 계산합니다.
-
-```text
-Current BackQuad ScreenUV
-    ↓ inverse(CurrentMatrix)
-Unit Square Coordinate
-    ↓ HistoryMatrix
-Previous FrontQuad SampleUV
-```
-
-계산한 3×3 행렬은 `History0`, `History1`, `History2` Material Parameter로 전달합니다.
-
-#### Quad 유효성 검사
-
-투영 결과에 대해:
-
-- `W > KINDA_SMALL_NUMBER`
-- 유한값 여부
-- 최소 Width / Height
-- Shoelace 방식의 Quad Area
-
-를 확인합니다.
-
-Quad가 순간적으로 유효하지 않을 때는 바로 기존 History를 파기하지 않고 `HistoryInvalidGraceFrames = 1`만큼 한 프레임 유예한 뒤 계속 실패하면 History를 무효화합니다.
-
-#### 표현 범위
-
-이 방식은 Depth Buffer, Motion Vector, Per-Pixel World Position을 사용하는 일반적인 3D Temporal Reprojection과 다릅니다.
-
-포트폴리오에서는 다음처럼 표현하는 것이 정확합니다.
-
-```text
-X 완전한 3D Temporal Reprojection
-O Portal Screen Quad 기반 Homography History Reprojection
-```
-
-<!-- 이미지 추천: Current BackQuad / Previous FrontQuad를 겹쳐 표시한 디버그 이미지 -->
-
-#### 관련 코드
-
-<details>
-<summary>코드 파일 / 함수 목록 보기</summary>
-
-```text
-PP3/PortalV2/PortalV2.h
-PP3/PortalV2/PortalV2.cpp
-
-APortalV2::CalculatePortalClipQuad
-APortalV2::IsClipQuadValid
-APortalV2::MakeSquareQuad
-APortalV2::InverseHomography
-APortalV2::MultiplyHomography
-APortalV2::MakePortalHomography
-APortalV2::SetHistoryHomography
-APortalV2::SetHistoryMaterial
-```
-</details>
-
----
-
-<a id="history-overscan"></a>
-### 4.7 History Coverage 문제와 V2 Overscan
-
-#### 문제
-
-Homography를 적용한 뒤에도 카메라를 회전하면 다음 프레임에서 필요해지는 History Sample 영역이 이전 프레임 Texture 바깥으로 나가는 문제가 남았습니다.
-
-테스트 과정에서는 필요한 UV가 대략:
-
-```text
--0.05
-1.05
-```
-
-정도까지 0~1 범위를 벗어나는 상황을 확인했습니다.
-
-문제의 핵심은 Reprojection 계산 자체보다 **이전 프레임에 필요한 주변 화면이 애초에 저장되어 있지 않다는 Coverage 부족**이었습니다.
-
-#### 첫 시도: Canonical Rotation
-
-처음에는 Player Camera 회전과 History Camera 회전을 분리해 History 좌표계를 고정하려 했습니다.
-
-예를 들어 V2 위치는 유지하고 Camera가 Portal Center를 바라보도록 Rotation을 다시 만드는 방식을 실험했습니다.
-
-| 방식 | 기대 | 실제 문제 | 판단 |
-|---|---|---|---|
-| Player-aligned Rotation | 현재 화면과 ScreenUV 대응이 자연스러움 | 회전 시 History Coverage가 부족할 수 있음 | 기본 구조 유지 |
-| Canonical Rotation | History 좌표계를 안정화할 수 있음 | Player ScreenUV와 Capture UV 불일치, 근접/비스듬한 위치에서 Forward 기준 불안정 | 폐기 |
-| Off-Axis Projection 확장 | Portal Aperture에 맞는 정확한 Frustum 구성 가능 | History 문제 하나를 해결하기에는 구현 복잡도가 크게 증가 | 미채택 |
-| V2 Overscan | 기존 좌표계 유지 + 주변 영역 선확보 | 같은 RT 안에서 유효 해상도 일부 감소 | 최종 채택 |
-
-Canonical Camera를 사용하면 기존 `ScreenAlignedUV → Portal RenderTarget` 대응이 깨져 일반 Portal 화면까지 별도 Reprojection이 필요했습니다.
-
-또 Camera가 Portal에 가까워질수록 `Camera → PortalCenter` 방향이 작은 위치 변화에도 크게 흔들려, 오히려 안정성이 떨어질 수 있었습니다.
-
-그래서 Camera Rotation을 바꾸는 방식은 폐기했습니다.
-
-#### 최종 해결: V2 자체를 Overscan
-
-Player-aligned Camera는 그대로 유지하고, 가장 깊은 실제 Capture인 V2의 FOV만 넓혔습니다.
-
-최종 설정은:
-
-```text
-HistoryOverscanScale = 1.15
-```
-
-입니다.
-
-FOV는 단순히 각도에 1.15를 곱하지 않고, 화면 중심 기준 Tan Half-FOV에 Scale을 적용해 계산합니다.
-
-```text
-OverscanFOV
-= 2 × atan(tan(BaseFOV / 2) × OverscanScale)
-```
-
-이렇게 V2에서 현재 화면 밖 주변 영역까지 같이 저장해 다음 프레임 Reprojection이 사용할 여유 공간을 확보했습니다.
-
-#### V1에서 V2 Overscan을 읽을 때 보정
-
-V1은 Normal FOV인데 입력 Texture인 V2만 Wider FOV이므로 그대로 같은 UV를 사용하면 재귀 화면이 축소되어 보입니다.
-
-구현 과정에서는 중앙 기준으로 다음과 같이 UV를 보정했습니다.
-
-```text
-OverscanUV
-= 0.5 + (ScreenUV - 0.5) / OverscanScale
-```
-
-C++에서는 `DeepOverscanScale`, `UseDeepOverscanMapping` Parameter를 Portal Material에 전달하고, V1이 V2 Overscan Texture를 읽는 순간에만 Mapping을 활성화합니다.
-
-#### History 전용 Capture 제거
-
-초기 Overscan 구조에서는:
-
-```text
-V2 Normal Capture
-V1 Normal Capture
-History Overscan Capture
-```
-
-총 3회의 SceneCapture가 필요했습니다.
-
-최종 구조는 V2 자체를 Overscan으로 바꿔 한 장을 두 용도로 재사용합니다.
-
-```text
-V2 Overscan Capture
-├─ 현재 프레임 V1 내부 재귀 화면의 입력
-└─ 다음 프레임 History
-
-V1 Normal Capture
-└─ 최종 PortalRenderTarget
-```
-
-그 결과 재귀 프레임의 `CaptureScene()` 호출을 **3회 → 2회**로 줄였습니다.
-
-#### History Copy 제거와 Ping-Pong
-
-중간 구현에서는 가장 깊은 결과를 별도 History WriteTarget으로 GPU Copy한 뒤 Read / Write를 Swap하는 구조를 사용했습니다.
-
-최종 코드에서는 V2가 처음부터 `PortalRecurWriteTarget`에 직접 Capture되므로 별도 `CopyRenderTarget()`이 필요하지 않습니다.
-
-프레임 끝에:
-
-```cpp
-Swap(PortalRecurRenderTarget, PortalRecurWriteTarget);
-```
-
-으로 포인터 역할만 바꿉니다.
-
-따라서 최종 History 경로는:
-
-```text
-Previous Frame
-PortalRecurRenderTarget = Read
-
-Current Frame
-V2 Overscan → PortalRecurWriteTarget = Write
-V1 samples PortalRecurWriteTarget
-
-Frame End
-Swap(Read, Write)
-
-Next Frame
-이전 Write 결과가 새로운 History Read
-```
-
-가 됩니다.
-
-이 구조로 같은 RenderTarget을 동시에 Read/Write하는 피드백 위험을 피하면서 별도 Texture Copy도 제거했습니다.
-
-<!-- 이미지 추천: 3 Capture 구조와 최종 2 Capture 구조 비교 다이어그램 -->
-
-#### 관련 코드
-
-<details>
-<summary>코드 파일 / 함수 목록 보기</summary>
-
-```text
-PP3/PortalV2/PortalV2.h
-PP3/PortalV2/PortalV2.cpp
-
-APortalV2::MakeCaptureView
-APortalV2::CaptureRecursive
-APortalV2::SetDeepOverscanMapping
-APortalV2::SavePortalHistory
-APortalV2::InvalidatePortalHistory
-```
-</details>
-
----
-
-<a id="capture-optimization"></a>
-### 4.8 SceneCapture 타이밍과 렌더링 최적화
-
-#### 문제 1: Camera Update 시점 차이
-
-Portal Camera는 Player Camera와 같은 프레임의 시점을 기준으로 계산되어야 합니다.
-
-개발 과정에서 Portal Render를 일반 Actor Tick 시점에 수행했을 때 Player Camera 갱신과 SceneCapture 갱신 시점이 어긋나, 빠른 회전이나 텔레포트 직후 Portal 화면이 한 프레임 늦게 따라오는 것처럼 보이는 문제가 있었습니다.
-
-#### 해결: Render 전용 Tick 분리
-
-일반 `APortalV2::Tick()`은 Traveller 통과 판정과 Clone 업데이트에 사용하고, Portal Render만 별도의 `FPortalRenderTickFunction`으로 분리했습니다.
-
-```text
-APortalV2::Tick
-→ Traveller / Crossing / Clone
-
-FPortalRenderTickFunction
-TickGroup = TG_PostUpdateWork
-→ UpdatePortalRender
-```
-
-최종 코드는 `TG_PostUpdateWork`에서 `CameraManager->GetCameraCachePOV()`를 읽어 Portal SceneCapture를 갱신합니다.
-
-이렇게 Player Camera Update 이후에 Portal Capture를 수행해 시점 불일치로 인한 흔들림을 줄였습니다.
-
-#### 문제 2: 보이지 않는 Portal도 매 프레임 Capture
-
-SceneCapture는 Portal 시스템에서 가장 큰 렌더링 비용이므로, 활성 상태만 보고 무조건 Capture하지 않도록 조건을 나눴습니다.
-
-`ShouldCapture()`는 다음을 확인합니다.
-
-```text
-1. 두 Portal이 모두 Active인가?
-2. MaxCaptureDistance 안인가?
-3. CloseCaptureDistance 이내인가? → 가까우면 바로 Capture
-4. Player가 Portal 앞면에 있는가?
-5. Portal 네 꼭짓점이 View Frustum에 보이는가?
-```
-
-`IsPortalVisibleView()`는 Portal 네 꼭짓점을 Clip Space로 직접 투영합니다.
-
-- 네 점 모두 Camera 뒤면 → 보이지 않음
-- 일부 점만 Camera 앞면 → 경계 상황이므로 보이는 것으로 처리
-- 네 점 모두 앞면 → NDC -1~1 범위를 기준으로 화면 바깥 한쪽에 완전히 벗어났는지 검사
-
-#### 재귀가 필요한 경우만 2회 Capture
-
-외부 Portal 자체가 보이더라도 그 안에서 다음 Portal이 보이지 않으면 재귀 Capture가 필요하지 않습니다.
-
-`IsRecursivePortalVisible()`로 V1 시점에서 다음 Portal 가시성을 검사해:
-
-| 상태 | Capture 경로 | `CaptureScene()` 횟수 |
-|---|---|---:|
-| Portal 비활성 / 너무 멀음 / 화면 밖 | Capture 안 함 | 0 |
-| Portal은 보이지만 재귀 Portal은 안 보임 | Normal Capture | 1 |
-| 재귀 Portal도 보임 | V2 Overscan + V1 Normal | 2 |
-
-으로 나눴습니다.
-
-#### 재귀 RenderTarget 해상도 분리
-
-최종 Portal 화면은 현재 Viewport 크기로 `PortalRenderTarget`을 생성하고, 재귀용 Read / Write RenderTarget은:
-
-```text
-RecursiveRenderScale = 0.75
-```
-
-를 적용합니다.
-
-즉 가장 눈에 잘 보이는 최종 V1 화면은 Full Resolution을 유지하고, 안쪽에 반복되는 V2 / History만 낮은 해상도로 처리합니다.
-
-#### 재귀 단계 ShowFlag 축소
-
-V2 Capture에서는 다음 후처리/고비용 항목을 비활성화합니다.
-
-```text
-Depth of Field
-Lens Flares
-Grain
-Vignette
-Camera Imperfections
-Scene Color Fringe
-Screen Space Reflections
-```
-
-V2 Capture가 끝나면 기존 ShowFlags를 다시 복원합니다.
-
-#### 최적화 방향
-
-이 프로젝트에서는 LOD / `MaxViewDistanceOverride`처럼 시연 맵의 Asset 규모에 따라 효과가 달라지는 최적화보다, **Portal 시스템 자체에서 직접 비용이 발생하는 SceneCapture 횟수·가시성·재귀 해상도·ShowFlag를 우선적으로 줄이는 방향**을 선택했습니다.
-
-#### 관련 코드
-
-<details>
-<summary>코드 파일 / 함수 목록 보기</summary>
-
-```text
-PP3/PortalV2/PortalV2.h
-PP3/PortalV2/PortalV2.cpp
-
-FPortalRenderTickFunction::ExecuteTick
-APortalV2::RegisterActorTickFunctions
-APortalV2::ShouldCapture
-APortalV2::IsPortalVisibleView
-APortalV2::IsPortalVisible
-APortalV2::IsRecursivePortalVisible
-APortalV2::ApplyRecursiveShowFlags
-APortalV2::UpdatePortalRender
-```
 </details>
 
 ---
 
 <a id="code-structure"></a>
+
 ## 5. 코드 구조
+
+본문은 `PP3/PortalV2/`의 구현을 기준으로 작성했습니다.
 
 ```text
 PP3/
 ├── Character/
-│   ├── PP3Character.h/.cpp          # 1인칭 Player, Portal / Grab 입력
-│   └── BodyClone.h/.cpp             # Player Skeletal Mesh Portal Clone
+│   ├── PP3Character.h/.cpp              # 플레이어 이동과 포탈·Grab·Throw 입력
+│   └── BodyClone.h/.cpp                 # 캐릭터용 Clone
 │
-├── PortalV2/                        # 최종 포트폴리오 Portal 시스템
-│   ├── PortalV2.h/.cpp              # Portal Transform, Teleport, SceneCapture, Recursion, History
-│   ├── PortalGunComponent.h/.cpp    # Portal 배치 검사, 발사, Portal Through Grab
-│   ├── PortalTravellerComponent.*   # 통과 상태, Collision, Physics, Clone
-│   ├── PortalSurfaceComponent.*     # 설치 가능 영역, Surface Hole Material Data
-│   ├── PortalClone.*                # Clone 공통 Transform / Clip
-│   ├── PortalStaticClone.*          # Static Mesh Traveller Clone
-│   └── PortalPlacementAreaComponent.*
+├── PortalV2/
+│   ├── PortalV2.h/.cpp                  # 좌표 변환, 텔레포트, Capture와 History
+│   ├── PortalGunComponent.h/.cpp        # 포탈 배치 검사와 Grab·Throw
+│   ├── PortalTravellerComponent.h/.cpp  # 통과 상태, 충돌 응답 복구와 Clone 관리
+│   ├── PortalSurfaceComponent.h/.cpp    # 설치 표면, PlaceArea와 Wall Mask
+│   ├── PortalClone.h/.cpp               # Clone의 위치 변환과 표시 범위 설정
+│   └── PortalStaticClone.h/.cpp         # 물리 오브젝트용 Clone
 │
-├── Obj/
-│   ├── Grab_Obj.*                   # PortalTraveller가 적용된 Physics Object
-│   ├── ButtonDoor_Obj.*
-│   ├── ButtonLaser_Obj.*
-│   ├── Door_Obj.*
-│   ├── LaserWall_Obj.*
-│   └── Wire_Obj.*
-│
-├── Portal/                          # 이전 Portal Prototype / Legacy 코드
-└── Widget/                          # HUD / Gun Mode / Crosshair
+├── Obj/                                 # 잡을 수 있는 물체, 버튼, 문 등
+├── Portal/                              # Legacy, 현재 프로젝트에서는 사용하지 않음
+└── Widget/                              # HUD, 모드 표시, 조준점
 ```
-
-이 README의 핵심 구현 설명은 `PortalV2/` 기준입니다. `Portal/` 폴더는 이전 Prototype 코드가 남아 있는 Legacy 영역으로, 최종 재귀/History 구조 설명에는 사용하지 않았습니다.
 
 ---
 
-<a id="render-settings"></a>
-## 6. 최종 렌더 설정 및 검증 포인트
+<a id="measurement-method"></a>
 
-### 최종 코드 설정
+## 6. 공통 측정 환경
 
-| 항목 | 값 | 역할 |
-|---|---:|---|
-| Portal Half Size | 90 × 130cm | 실제 Portal 크기 180 × 260cm |
-| Main RenderTarget | 현재 Viewport Size | 최종 V1 화면 |
-| Main RT Format | `RTF_RGBA16f` | Portal 최종 HDR RenderTarget |
-| Recursive RT Scale | `0.75` | V2 / History Read·Write 해상도 축소 |
-| History Overscan Scale | `1.15` | 다음 프레임 History Coverage 확보 |
-| Max Capture Distance | 8000cm | 이 거리 밖에서는 Capture 중단 |
-| Close Capture Distance | 200cm | 근접 시 화면 경계 판정보다 Capture 안정성을 우선 |
-| History Invalid Grace | 1 Frame | 순간적인 Quad Invalid로 History가 즉시 끊기는 현상 완화 |
-| Normal Capture | 1회 | V1만 Capture |
-| Recursive Capture | 2회 | V2 Overscan + V1 Normal |
-
-### 최종적으로 확인한 동작
-
-```text
-Portal 설치 가능 영역 보정
-Portal 앞 장애물 / 표면 단절 설치 거부
-Player Portal 통과 + Control Rotation / Velocity 유지
-Physics Object 위치·회전·선형/각속도 변환
-Traveller Clone + Portal Plane Clip
-Portal 너머 PhysicsHandle Grab / Throw
-SceneCapture Clip Plane
-V1 / V2 재귀 화면
-History Homography Reprojection
-History Read / Write Ping-Pong
-V2 Overscan Coverage
-PostUpdateWork Camera Timing
-거리 / 방향 / 화면 가시성 기반 Capture Culling
-재귀 단계 0.75 Resolution + ShowFlag 축소
-```
-
-### History가 없거나 유효하지 않을 때
-
-첫 재귀 프레임처럼 History가 아직 없으면 `UseHistory = 0`으로 두고 `RecurFallbackColor`를 사용합니다.
-
-현재 Quad 계산이 실패한 경우에도 History Texture를 잘못 샘플링하지 않고 History 사용을 끄며, 한 프레임 Grace 이후에도 계속 유효하지 않으면 History State를 Reset합니다.
-
-Portal 재배치, 링크 변경, 비활성화, 텔레포트처럼 기존 History와 현재 Camera 관계가 크게 바뀌는 이벤트에서도 History를 무효화해 이전 공간의 화면이 남지 않도록 처리했습니다.
+| 항목 | 내용 |
+|---|---|
+| CPU | Intel Core i9-12900KF |
+| GPU | GeForce RTX 3050 |
+| RAM | DDR4 32GB |
+| OS | Windows 11 |
+| Unreal Engine | 4.27.2 |
+| 실행 환경 | Development / Standalone Game |
+| 최종 포탈 화면 해상도 | 1920 × 1080 |
+| 안쪽 화면 해상도 | 기본 1440 × 810, 해상도 비교에서는 1920 × 1080도 사용 |
+| 측정 기준 | 게임 전체의 GPU 프레임 시간 |
+| 집계 방법 | 1,800프레임 중 앞뒤 5프레임을 제외한 평균 |
 
 ---
 
 <a id="tradeoffs"></a>
+
 ## 7. 설계상 트레이드오프
 
-### 제한된 실제 재귀 + History 근사
+### History 재사용과 안쪽 화면의 품질
 
-현재 프레임의 실제 SceneCapture를 V1 / V2 두 단계로 제한했기 때문에 Capture 비용을 통제할 수 있습니다.
+Capture 횟수를 줄인 대신 두 단계보다 깊은 부분은 History에 의존합니다. 위치를 보정해도 그 안에서 움직인 물체까지 현재 모습으로 바꿀 수는 없고, 재귀 화면이 채워지는 동안 안쪽이 살짝 늘어져 보이는 현상도 남습니다.
 
-대신 V3 이후는 이전 프레임 결과를 사용하므로 빠른 Camera 이동·회전에서는 완전한 현재 프레임 재귀와 미세한 Temporal 차이가 생길 수 있습니다.
+Overscan으로 다음 프레임에 쓸 주변 화면을 더 확보할 수 있지만, 같은 해상도에 더 넓은 범위를 담으므로 안쪽 화면의 선명도는 떨어질 수 있습니다.
 
-이 프로젝트에서는 무한 재귀를 정확히 렌더링하는 것보다 **고정된 Capture 비용 안에서 깊은 재귀가 이어지는 시각적 결과**를 우선했습니다.
+### Capture 비용과 시야 판정 범위
 
-### Portal Quad 기반 Reprojection
+재귀가 필요한 포탈은 일반 화면보다 한 번 더 Capture하는 비용이 남습니다. 또 현재 시야 검사는 포탈 네 모서리의 화면 범위를 확인하는 방식이어서, 다른 물체에 가려졌는지까지 판정해 Capture를 생략하지는 않습니다.
 
-History Reprojection은 Portal Plane의 네 꼭짓점만 사용합니다.
+### 직사각형 포탈 기준
 
-따라서 Portal 영역 자체의 화면상 위치 변화는 보정할 수 있지만, History Texture 내부의 모든 3D Geometry를 Depth / Motion Vector 기준으로 재투영하는 구조는 아닙니다.
+배치 검사와 통과 판정은 직사각형 포탈을 기준으로 만들었습니다. 겉모양을 타원형으로 바꿔도 판정 범위는 그대로이므로, 실제 입구 모양에 맞추려면 검사 방식도 바꿔야 합니다.
 
-장점은 구현 복잡도와 필요한 Buffer를 크게 늘리지 않고 Portal이라는 제한된 문제에 맞춰 적용할 수 있다는 점입니다.
+### 9곳 표면 검사의 한계
 
-### Overscan과 유효 해상도
-
-`HistoryOverscanScale = 1.15`로 주변 영역을 더 저장해 Camera 회전에 대한 Coverage를 확보했습니다.
-
-대신 같은 RenderTarget 해상도 안에서 더 넓은 FOV를 담기 때문에 History 중심부가 사용하는 실질적인 픽셀 밀도는 낮아집니다.
-
-이를 보완하기 위해 최종 Portal 화면은 Full Resolution을 유지하고, 안쪽 재귀 화면만 `RecursiveRenderScale = 0.75`로 별도 관리했습니다.
-
-### 선택적 Collision Ignore 방식
-
-Runtime Collision Mesh에 실제 구멍을 만드는 대신, Portal 내부 Traveller만 해당 Surface Channel을 Ignore하도록 만들었습니다.
-
-구조가 단순하고 Surface를 재생성할 필요가 없지만, Portal 가능한 벽은 Collision Channel과 PortalBlock 규칙을 맞춰야 합니다.
-
-### 고정된 직사각형 Portal 범위
-
-현재 배치 검사와 Screen Quad 계산은 `PortalHalfSize`를 기준으로 한 직사각형 Aperture를 전제로 합니다.
-
-시각적으로 타원형 Mask를 적용하는 것은 가능하지만, 실제 타원형 경계를 기준으로 배치·통과 판정을 정확하게 만들려면 Aperture 내부 판정과 Surface 지원 검사를 별도로 확장해야 합니다.
-
-### Portal Through Grab의 재귀 깊이
-
-Grab Trace는 Portal을 한 번 통과한 뒤 두 번째 Trace를 수행합니다.
-
-여러 Portal을 연속해서 통과하는 일반화된 Ray Traversal 구조는 아니지만, 현재 게임 플레이 범위에서는 한 쌍의 연결 Portal 너머 상호작용에 필요한 기능을 우선 구현했습니다.
-
----
-
-<a id="one-line-summary"></a>
-## 8. 한 줄 요약
-
-> Portal 배치·Collision·Traveller·Grab 시스템을 구현하고, **2회의 SceneCapture + Homography History Reprojection + V2 Overscan + Ping-Pong RenderTarget**으로 깊은 재귀 화면을 제한된 렌더링 비용 안에서 근사한 Unreal Engine C++ 클라이언트 포트폴리오입니다.
+포탈이 놓일 표면을 9곳에서 확인하므로, 검사 지점 사이에 있는 작은 구멍은 놓칠 수 있습니다. 설치 영역을 나누거나 검사 지점을 늘려 보완할 수 있지만, 제한된 지점만으로 표면 전체를 빠짐없이 확인하기는 어렵습니다.
