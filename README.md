@@ -23,12 +23,12 @@
 - [2. 핵심 기술 요약](#tech-summary)
 - [3. 시스템 구조](#system-architecture)
 - [4. 핵심 기술 상세](#core-tech)
-  - [4.1 포탈 배치 - 설치 영역과 9곳의 표면 검사](#portal-placement)
+  - [4.1 재귀 렌더링 - 2회 Capture와 History](#recursive-rendering)
   - [4.2 포탈 근접 렌더링 - 평면 잘림과 벽 노출 해결](#portal-nearclip)
-  - [4.3 재귀 렌더링 - 2회 Capture와 History](#recursive-rendering)
-  - [4.4 SceneCapture 최적화와 갱신 순서](#capture-optimization)
-  - [4.5 포탈 통과 시 충돌 처리](#portal-surface-collision)
-  - [4.6 텔레포트와 Clone](#portal-teleport-clone)
+  - [4.3 SceneCapture 최적화와 갱신 순서](#capture-optimization)
+  - [4.4 텔레포트와 Clone](#portal-teleport-clone)
+  - [4.5 포탈 배치 - 설치 영역과 9곳의 표면 검사](#portal-placement)
+  - [4.6 포탈 통과 시 충돌 처리](#portal-surface-collision)
   - [4.7 포탈 너머 Grab / Throw](#portal-grab)
 - [5. 코드 구조](#code-structure)
 - [6. 공통 측정 환경](#measurement-method)
@@ -65,12 +65,12 @@
 
 | 핵심 기술 | 설명 |
 |---|---|
-| 포탈 배치 | 포탈 크기·회전·여백을 고려해 설치 범위 안으로 중심을 보정했습니다. 이후 9곳을 Trace해 같은 Mesh와 비슷한 표면 방향인지 확인했습니다. |
-| 근접 렌더링 | 가까이 가거나 통과할 때 화면이 잘리는 문제를 입구가 열린 상자형 보조 Mesh로 보완했습니다. 틈으로 드러나는 벽은 Material에서 포탈 영역만 숨겼습니다. |
 | 재귀 렌더링 | 재귀가 필요한 포탈 하나당 한 프레임에 2회 Capture하고, 더 깊은 부분은 Homography로 History의 위치를 보정해 사용했습니다. |
+| 근접 렌더링 | 가까이 가거나 통과할 때 화면이 잘리는 문제를 입구가 열린 상자형 보조 Mesh로 보완했습니다. 틈으로 드러나는 벽은 Material에서 포탈 영역만 숨겼습니다. |
 | SceneCapture 최적화와 갱신 순서 | 거리와 시야 범위로 Capture 여부를 정하고, 안쪽 화면은 해상도와 일부 렌더 효과를 줄였습니다. 카메라 갱신 뒤에 Capture하도록 순서도 맞췄습니다. |
-| 포탈 통과 시 충돌 처리 | 벽과 바닥·천장에 맞는 충돌 설정을 두고, 통과 대상이 해당 표면의 채널을 잠시 무시하도록 했습니다. 입구 주변은 작은 충돌 박스로 막고, Trigger에서 나가면 원래 설정으로 복구했습니다. |
 | 텔레포트와 Clone | 입구 범위 안에서 포탈 평면을 넘으면 위치·방향·속도를 반대편 기준으로 변환해 텔레포트했습니다. 통과 중에는 반대편에 Clone을 표시해 하나의 물체가 양쪽 포탈에 걸쳐 있는 것처럼 보이도록 했습니다. |
+| 포탈 배치 | 포탈 크기·회전·여백을 고려해 설치 범위 안으로 중심을 보정했습니다. 이후 9곳을 Trace해 같은 Mesh와 비슷한 표면 방향인지 확인했습니다. |
+| 포탈 통과 시 충돌 처리 | 벽과 바닥·천장에 맞는 충돌 설정을 두고, 통과 대상이 해당 표면의 채널을 잠시 무시하도록 했습니다. 입구 주변은 작은 충돌 박스로 막고, Trigger에서 나가면 원래 설정으로 복구했습니다. |
 | 포탈 너머 Grab / Throw | 포탈을 맞히면 Trace의 위치와 방향을 반대편 기준으로 변환해 남은 거리를 이어 검사했습니다. 이를 통해 포탈 너머의 물체를 잡거나 던질 수 있게 했습니다. |
 
 ---
@@ -112,54 +112,86 @@ flowchart TD
 
 ## 4. 핵심 기술 상세
 
-<a id="portal-placement"></a>
+<a id="recursive-rendering"></a>
 
-### 4.1 포탈 배치 - 설치 영역과 9곳의 표면 검사
+### 4.1 재귀 렌더링 - 2회 Capture와 History
 
-#### 문제 1 - 벽 가장자리에 설치하면 포탈 일부가 벽 밖으로 나감
+#### 문제 1 - 마주 보는 포탈 안쪽에 잔상이 남음
 
-처음에는 포탈을 설치할 표면을 LineTrace로 찾고, 맞힌 지점인 `ImpactPoint`에 포탈을 놓았습니다. 
+포탈 화면은 SceneCapture2D로 반대편 시점을 Capture하고, 그 결과를 RenderTarget에 저장해 포탈 표면에 표시하는 방식으로 구성했습니다.
 
-벽 중앙에서는 괜찮았지만 가장자리에서는 포탈 일부가 벽 밖으로 나왔습니다. 포탈의 크기가 **180 × 260cm**여서, 중심뿐 아니라 전체가 들어갈 공간을 확인해야 했습니다.
+처음에는 포탈 하나당 한 번만 Capture했습니다. 두 포탈을 마주 보게 놓으면 화면 안에 다시 포탈이 보이는데, 이 안쪽 포탈에는 직전 Capture 결과가 그대로 들어갔습니다. 카메라가 가만히 있을 때는 크게 티가 나지 않았지만, 움직이면 과거 화면이 안쪽에 남아 잔상처럼 보였습니다.
 
-#### 1차 개선 - PlaceArea를 이용한 위치 보정
+이를 줄이려면 안쪽 화면도 새로 Capture해야 했지만, 보이는 깊이만큼 전부 갱신하면 한 프레임에 필요한 Capture 횟수가 계속 늘어났습니다.
 
-벽·바닥·천장에 <strong>포탈을 설치할 수 있는 Box 영역(PlaceArea)</strong>을 지정했습니다. 
+| 마주 보는 포탈 안쪽에 남는 잔상 |
+|---|
+| <img width="426" height="240" alt="6" src="https://github.com/user-attachments/assets/2967cd7b-e420-40f8-b913-26153b2f2378" /> |
 
-포탈의 크기와 회전, 여백을 고려해 중심을 놓을 수 있는 범위를 구하고, 가장자리를 맞히면 그 범위 안의 가장 가까운 위치로 보정했습니다.
+#### 1차 개선 - 두 단계까지 새로 Capture하고 History의 위치 보정
 
-#### 문제 2 - 실제 Mesh의 형태를 확인하지 못함
+현재 화면에 새로 반영할 재귀 깊이는 두 단계로 제한했습니다. 안쪽 화면이 먼저 준비돼야 하므로 다음 순서로 Capture했습니다.
 
-설치 영역으로 위치를 맞춰도, 가운데 구멍이 있거나 외곽이 사각형이 아닌 Mesh에서는 포탈 일부가 허공에 걸치는 문제가 있었습니다. Box 범위만 확인하다 보니 그 안에 실제 표면이 없는 부분까지는 걸러내지 못했습니다.
+1. **포탈을 두 번 통과한 시점**으로 카메라의 위치와 방향을 변환해 안쪽 재귀 화면을 Capture합니다.
+2. 그 결과를 안쪽 포탈에 넣고, **포탈을 한 번 통과한 시점**에서 최종 포탈 화면을 Capture합니다.
 
-#### 2차 개선 - 9-Point Surface Probe
+그보다 깊은 부분에는 **이전 프레임에 저장한 재귀 화면(History)을** 사용했습니다. 다만 이전 카메라 위치에서 만든 화면이라, 그대로 넣으면 현재 포탈의 위치와 모양에 맞지 않았습니다.
 
-이를 보완하기 위해 포탈 중앙과 네 모서리·네 변 중앙 부근의 **총 9곳에서 표면 방향으로 다시 Trace**했습니다. 
+그래서 현재의 깊은 재귀 시점에서 포탈 네 모서리를 화면 좌표로 구한 뒤, History와 함께 저장한 기준 모서리와 대응시켰습니다. 이 관계로 **Homography를 계산해 Material에 전달하고, History를 읽는 UV를 바꿔** 현재 포탈에 맞춰 보이도록 했습니다.
 
-`TraceComplex`를 켜고, 모든 지점이 처음 맞힌 것과 같은 Mesh Component를 맞히는지 확인했습니다. 표면 방향인 `Normal`도 비슷한 경우에만 다음 검사로 넘어갔습니다.
+#### 문제 2 - 카메라를 돌리면 History에 필요한 부분이 없음
 
-| 벽 가장자리에서 설치 위치 보정 | 표면에 구멍이 있는 위치의 설치 차단 |
+카메라를 빠르게 돌리면 보정한 UV가 History의 Capture 범위를 벗어났습니다. History에 담기지 않은 부분이라, 위치만 맞춰서는 화면을 채울 수 없었습니다.
+
+| 카메라 회전 시 History의 Capture 범위 부족 |
+|---|
+| <img width="426" height="240" alt="Video Project 44" src="https://github.com/user-attachments/assets/717a151b-a7fd-43c3-99ff-921f376854c2" /> |
+
+#### 해결 방안 검토
+
+| 방법 | 검토 결과 |
 |---|---|
-| <img width="426" height="240" alt="2" src="https://github.com/user-attachments/assets/88c3367c-8f5a-4bae-98a1-2783323e0836" /> | <img width="426" height="240" alt="1" src="https://github.com/user-attachments/assets/8d2ffe87-659f-48d5-b728-f3ff2b084f72" /> |
+| 화면을 읽는 위치를 가장자리로 제한 | 범위 밖에서도 색은 읽을 수 있지만, 가장자리 색이 길게 늘어나 보여 제외 |
+| History용 카메라 방향 고정 | 플레이어가 시점을 돌려도 History를 Capture하는 방향은 유지했지만, 일반 포탈 화면과 기준이 달라지고 근접 시에도 불안정해 실험 후 제외 |
+| 안쪽 화면을 더 넓게 Capture | 다음 프레임의 카메라 이동에 필요한 주변 화면을 미리 담을 수 있어 선택 |
 
-#### 추가 검사 - 기존 포탈과의 겹침 확인
+#### 2차 개선 - 넓게 Capture한 화면을 현재·다음 프레임에 함께 사용
 
-마지막으로 설치 위치에서 Box 형태로 겹침을 검사하고, 기존 포탈과 겹치면 설치하지 않도록 했습니다.
+안쪽 화면은 <strong>FOV를 넓혀 주변까지 더 담는 방식(Overscan)</strong>으로 Capture했습니다. 이 결과를 최종 화면에 넣을 때는 중앙의 필요한 부분을 읽어 크기를 맞췄습니다.
+
+처음에는 안쪽 화면, 최종 화면, History용 화면을 따로 Capture해 총 3회가 필요했습니다. 이후 넓게 Capture한 안쪽 화면을 현재 재귀 화면과 다음 프레임 History에 함께 사용하면서 **재귀가 필요한 포탈 하나당 프레임별 Capture를 3회에서 2회로 줄였습니다.**
+
+최종 화면용 RenderTarget과 별개로, 안쪽 재귀 화면을 담을 RenderTarget 두 장을 사용했습니다. 한 장에서 History를 읽는 동안 다른 한 장에 새 화면을 Capture하고, 갱신이 끝나면 읽기·쓰기 역할을 바꿨습니다. 이렇게 사용 중인 History를 덮어쓰지 않으면서, 새 결과를 별도 복사 없이 다음 프레임에 사용했습니다.
+
+#### 측정 결과
+
+| 전체 Capture 횟수/프레임 | 평균 GPU 프레임 시간(ms) |
+|---:|---:|
+| 3회 | 15.832 |
+| 2회 | 14.231 |
+
+History를 별도로 Capture하는 3회 방식과 안쪽 화면을 History로 재사용하는 2회 방식을 비교했습니다. Capture를 한 번 줄이면서, 이 장면의 평균 GPU 프레임 시간은 **15.832ms에서 14.231ms로 약 10.1% 감소**했습니다.
+
+| 2회 Capture와 History를 적용한 재귀 렌더링 |
+|---|
+| <img width="426" height="240" alt="Video Project 44 (1)" src="https://github.com/user-attachments/assets/e2dde97c-f9a4-43a8-90c6-e4d23147a52d" /> |
 
 <details>
 <summary>관련 코드 위치</summary>
 
-```text
-PP3/PortalV2/PortalGunComponent.h
-PP3/PortalV2/PortalGunComponent.cpp
+**[PortalV2.h](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.h)** · **[PortalV2.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp)**
 
-UPortalGunComponent::FindPortalSpot
-UPortalGunComponent::CalculatePortalRotation
-UPortalGunComponent::PortalInsidePlaceArea
-UPortalGunComponent::PortalSupportCheck
-UPortalGunComponent::IsPortalBlock
-UPortalGunComponent::FirePortal
-```
+- [`APortalV2::CaptureRecursive`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L912-L998)
+- [`APortalV2::CalculatePortalClipQuad`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1102-L1143)
+- [`APortalV2::GetPortalQuads`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1369-L1381)
+- [`APortalV2::MakeSquareQuad`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1244-L1280)
+- [`APortalV2::MakePortalHomography`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1322-L1340)
+- [`APortalV2::SetHistoryHomography`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1341-L1349)
+- [`APortalV2::SetHistoryMaterial`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1201-L1228)
+- [`APortalV2::MakeCaptureView`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1351-L1368)
+- [`APortalV2::SetDeepOverscanMapping`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1384-L1398)
+- [`APortalV2::SavePortalHistory`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1230-L1236)
+- [`APortalV2::InvalidatePortalHistory`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1237-L1243)
 
 </details>
 
@@ -222,105 +254,21 @@ UPortalGunComponent::FirePortal
 <details>
 <summary>관련 코드 위치</summary>
 
-```text
-PP3/PortalV2/PortalV2.h
-PP3/PortalV2/PortalV2.cpp
-PP3/PortalV2/PortalSurfaceComponent.h
-PP3/PortalV2/PortalSurfaceComponent.cpp
+**[PortalV2.h](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.h)** · **[PortalV2.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp)**
 
-PortalNearClipShell
-APortalV2::PlaceSurface
-APortalV2::AddSurfaceHole
-UPortalSurfaceComponent::SetPortalHole
-UPortalSurfaceComponent::ClearPortalHole
-UPortalSurfaceComponent::UpdatePortalMaterial
-```
+- [`APortalV2::APortalV2`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L51-L174)
+- [`APortalV2::InitializePortalMaterials`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L323-L379)
+- [`APortalV2::SetScreenTexture`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L869-L880)
+- [`APortalV2::PlaceSurface`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L616-L640)
+- [`APortalV2::AddSurfaceHole`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L642-L669)
+- [`APortalV2::ClearSurfaceHole`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L671-L678)
 
-</details>
+**[PortalSurfaceComponent.h](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalSurfaceComponent.h)** · **[PortalSurfaceComponent.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalSurfaceComponent.cpp)**
 
----
-
-<a id="recursive-rendering"></a>
-
-### 4.3 재귀 렌더링 - 2회 Capture와 History
-
-#### 문제 1 - 마주 보는 포탈 안쪽에 잔상이 남음
-
-처음에는 포탈 하나당 한 번만 Capture했습니다. 두 포탈을 마주 보게 놓으면 화면 안에 다시 포탈이 보이는데, 이 안쪽 포탈에는 직전 Capture 결과가 그대로 들어갔습니다. 카메라가 가만히 있을 때는 크게 티가 나지 않았지만, 움직이면 과거 화면이 안쪽에 남아 잔상처럼 보였습니다.
-
-
-이를 줄이려면 안쪽 화면도 새로 Capture해야 했지만, 보이는 깊이만큼 전부 갱신하면 한 프레임에 필요한 Capture 횟수가 계속 늘어났습니다.
-
-| 마주 보는 포탈 안쪽에 남는 잔상 |
-|---|
-| <img width="426" height="240" alt="6" src="https://github.com/user-attachments/assets/2967cd7b-e420-40f8-b913-26153b2f2378" /> |
-
-#### 1차 개선 - 두 단계까지 새로 Capture하고 History의 위치 보정
-
-현재 화면에 새로 반영할 재귀 깊이는 두 단계로 제한했습니다. 안쪽 화면이 먼저 준비돼야 하므로 다음 순서로 Capture했습니다.
-
-1. **포탈을 두 번 통과한 시점**으로 카메라의 위치와 방향을 변환해 안쪽 재귀 화면을 Capture합니다.
-2. 그 결과를 안쪽 포탈에 넣고, **포탈을 한 번 통과한 시점**에서 최종 포탈 화면을 Capture합니다.
-
-그보다 깊은 부분에는 **이전 프레임에 저장한 재귀 화면(History)을** 사용했습니다. 다만 이전 카메라 위치에서 만든 화면이라, 그대로 넣으면 현재 포탈의 위치와 모양에 맞지 않았습니다.
-
-그래서 현재의 깊은 재귀 시점에서 포탈 네 모서리를 화면 좌표로 구한 뒤, History와 함께 저장한 기준 모서리와 대응시켰습니다. 이 관계로 **Homography를 계산해 Material에 전달하고, History를 읽는 UV를 바꿔** 현재 포탈에 맞춰 보이도록 했습니다.
-
-#### 문제 2 - 카메라를 돌리면 History에 필요한 부분이 없음
-
-카메라를 빠르게 돌리면 보정한 UV가 History의 Capture 범위를 벗어났습니다. History에 담기지 않은 부분이라, 위치만 맞춰서는 화면을 채울 수 없었습니다.
-
-| 카메라 회전 시 History의 Capture 범위 부족 |
-|---|
-| <img width="426" height="240" alt="Video Project 44" src="https://github.com/user-attachments/assets/717a151b-a7fd-43c3-99ff-921f376854c2" /> |
-
-#### 해결 방안 검토
-
-| 방법 | 검토 결과 |
-|---|---|
-| 화면을 읽는 위치를 가장자리로 제한 | 범위 밖에서도 색은 읽을 수 있지만, 가장자리 색이 길게 늘어나 보여 제외 |
-| History용 카메라 방향 고정 | 플레이어가 시점을 돌려도 History를 Capture하는 방향은 유지했지만, 일반 포탈 화면과 기준이 달라지고 근접 시에도 불안정해 실험 후 제외 |
-| 안쪽 화면을 더 넓게 Capture | 다음 프레임의 카메라 이동에 필요한 주변 화면을 미리 담을 수 있어 선택 |
-
-#### 2차 개선 - 넓게 Capture한 화면을 현재·다음 프레임에 함께 사용
-
-안쪽 화면은 <strong>FOV를 넓혀 주변까지 더 담는 방식(Overscan)</strong>으로 Capture했습니다. 이 결과를 최종 화면에 넣을 때는 중앙의 필요한 부분을 읽어 크기를 맞췄습니다.
-
-처음에는 안쪽 화면, 최종 화면, History용 화면을 따로 Capture해 총 3회가 필요했습니다. 이후 넓게 Capture한 안쪽 화면을 현재 재귀 화면과 다음 프레임 History에 함께 사용하면서 **재귀가 필요한 포탈 하나당 프레임별 Capture를 3회에서 2회로 줄였습니다.**
-
-최종 화면용 RenderTarget과 별개로, 안쪽 재귀 화면을 담을 RenderTarget 두 장을 사용했습니다. 한 장에서 History를 읽는 동안 다른 한 장에 새 화면을 Capture하고, 갱신이 끝나면 읽기·쓰기 역할을 바꿨습니다. 이렇게 사용 중인 History를 덮어쓰지 않으면서, 새 결과를 별도 복사 없이 다음 프레임에 사용했습니다.
-
-#### 측정 결과
-
-| 전체 Capture 횟수/프레임 | 평균 GPU 프레임 시간(ms) |
-|---:|---:|
-| 3회 | 15.832 |
-| 2회 | 14.231 |
-
-History를 별도로 Capture하는 3회 방식과 안쪽 화면을 History로 재사용하는 2회 방식을 비교했습니다. Capture를 한 번 줄이면서, 이 장면의 평균 GPU 프레임 시간은 **15.832ms에서 14.231ms로 약 10.1% 감소**했습니다.
-
-| 2회 Capture와 History를 적용한 재귀 렌더링 |
-|---|
-| <img width="426" height="240" alt="Video Project 44 (1)" src="https://github.com/user-attachments/assets/e2dde97c-f9a4-43a8-90c6-e4d23147a52d" /> |
-
-<details>
-<summary>관련 코드 위치</summary>
-
-```text
-PP3/PortalV2/PortalV2.h
-PP3/PortalV2/PortalV2.cpp
-
-APortalV2::CaptureRecursive
-APortalV2::CalculatePortalClipQuad
-APortalV2::GetPortalQuads
-APortalV2::MakePortalHomography
-APortalV2::SetHistoryHomography
-APortalV2::SetHistoryMaterial
-APortalV2::MakeCaptureView
-APortalV2::SetDeepOverscanMapping
-APortalV2::SavePortalHistory
-APortalV2::InvalidatePortalHistory
-```
+- [`UPortalSurfaceComponent::CreateSurfaceMaterialInstances`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalSurfaceComponent.cpp#L82-L97)
+- [`UPortalSurfaceComponent::SetPortalHole`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalSurfaceComponent.cpp#L147-L157)
+- [`UPortalSurfaceComponent::ClearPortalHole`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalSurfaceComponent.cpp#L159-L169)
+- [`UPortalSurfaceComponent::UpdatePortalMaterial`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalSurfaceComponent.cpp#L99-L145)
 
 </details>
 
@@ -328,11 +276,11 @@ APortalV2::InvalidatePortalHistory
 
 <a id="capture-optimization"></a>
 
-### 4.4 SceneCapture 최적화와 갱신 순서
+### 4.3 SceneCapture 최적화와 갱신 순서
 
 #### 개선 시도 - Capture 간격을 늘리자 화면이 늦게 따라옴
 
-처음에는 화면에서 보이는 크기에 따라 Capture 주기를 바꿨습니다.
+Capture 비용을 줄이기 위해 처음에는 화면에서 보이는 크기에 따라 Capture 주기를 바꿨습니다.
 
 ```text
 크게 보임 → 매 프레임
@@ -404,21 +352,159 @@ APortalV2::InvalidatePortalHistory
 <details>
 <summary>관련 코드 위치</summary>
 
-```text
-PP3/PortalV2/PortalV2.h
-PP3/PortalV2/PortalV2.cpp
+**[PortalV2.h](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.h)** · **[PortalV2.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp)**
 
-APortalV2::ShouldCapture
-APortalV2::IsPortalVisibleView
-APortalV2::IsRecursivePortalVisible
-APortalV2::CaptureNormal
-APortalV2::CreatePortalRenderTargets
-APortalV2::UpdateRenderTargetSize
-APortalV2::ApplyRecursiveShowFlags
-APortalV2::UpdatePortalRender
-APortalV2::RegisterActorTickFunctions
-FPortalRenderTickFunction::ExecuteTick
-```
+- [`APortalV2::ShouldCapture`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1000-L1019)
+- [`APortalV2::IsPortalVisibleView`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1400-L1450)
+- [`APortalV2::IsRecursivePortalVisible`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1461-L1472)
+- [`APortalV2::CaptureNormal`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L882-L911)
+- [`APortalV2::CaptureRecursive`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L912-L998)
+- [`APortalV2::CreatePortalRenderTargets`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L838-L868)
+- [`APortalV2::UpdateRenderTargetSize`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1524-L1552)
+- [`APortalV2::ApplyRecursiveShowFlags`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1474-L1487)
+- [`APortalV2::APortalV2`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L51-L174)
+- [`APortalV2::UpdatePortalRender`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1022-L1055)
+- [`APortalV2::RegisterActorTickFunctions`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L202-L223)
+- [`FPortalRenderTickFunction::ExecuteTick`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L40-L44)
+
+</details>
+
+---
+
+<a id="portal-teleport-clone"></a>
+
+### 4.4 텔레포트와 Clone
+
+#### 포탈에 걸쳐 있는 모습 표시
+
+포탈 입구의 Trigger에 들어오면 반대편에 원본과 같은 모습의 `Clone`을 보여줍니다. Clone은 원본의 모습과 움직임을 따라가게 하고, 원본과 Clone의 Material에서 포탈 평면을 기준으로 불필요한 부분을 숨겼습니다. 이렇게 하나의 물체가 양쪽에 걸쳐 있는 것처럼 보이도록 했습니다.
+
+| 상태 | 들어간 포탈 쪽 | 나온 포탈 쪽 |
+|---|---|---|
+| 텔레포트 전 | 원본의 아직 넘어가지 않은 부분 | Clone의 넘어간 부분 |
+| 텔레포트 후 | Clone의 아직 남아 있는 부분 | 이동한 원본의 나온 부분 |
+
+Trigger에서 완전히 빠져나오면 Clone을 숨기고 원본 전체가 보이도록 복구했습니다. Clone은 처음 필요할 때 생성해 재사용하고, 표시용이므로 충돌은 껐습니다.
+
+물체 Clone은 물리 시뮬레이션도 끄고, 캐릭터 Clone은 Master Pose로 원본의 애니메이션 포즈를 따라가게 했습니다.
+
+#### 추가 개선 - 시점에 따른 1인칭 팔·총 표시
+
+캐릭터에는 1인칭 화면용 팔·총과 외부에서 보이는 몸체·총을 따로 뒀습니다. 그런데 Clone의 1인칭 팔·총을 포탈 Capture에서 숨기면 통과 중 총이 끊겨 보였고, 그대로 표시하면 다른 각도에서 몸체와 맞지 않는 팔·총이 보였습니다.
+
+| 1인칭 팔·총이 잘못 보이거나 끊기는 문제 |
+|---|
+| <img width="560" height="240" alt="Video Project 51" src="https://github.com/user-attachments/assets/11c25f13-1403-4db5-9f1c-efa254a365f8" /> |
+
+이를 해결하기 위해 Capture 직전에 표시할 Mesh를 구분해, **현재 통과 중인 포탈의 최종 Capture에서는 1인칭 팔·총을, 반대편 포탈과 안쪽 재귀 Capture에서는 몸체·총을 표시**했습니다. 플레이어가 월드를 직접 보는 화면에서도 Clone의 1인칭 팔·총은 숨겨, 출구 쪽에 따로 드러나지 않도록 했습니다.
+
+| 시점별 팔·총 표시 개선과 포탈 통과 |
+|---|
+| <img width="560" height="240" alt="Video_Project_56_under_10MB" src="https://github.com/user-attachments/assets/d1f972e6-5aff-4d56-8bb4-8092a8aa3fac" /> |
+
+#### 실제 텔레포트 판정
+
+Trigger에 들어왔다고 바로 텔레포트하지는 않았습니다. 캐릭터는 Capsule 중심, 물리 오브젝트는 질량 중심의 이전·현재 위치를 비교했습니다.
+
+포탈 앞에서 뒤로 넘어갔다면 두 위치를 잇는 선과 포탈 평면의 교차점을 구했습니다. **그 점이 입구 범위 안일 때만** 위치·방향·이동 속도를 반대편 기준으로 변환해 텔레포트하고, 물리 오브젝트는 회전 속도도 함께 변환했습니다. 캐릭터는 시점 방향을 변환하되 몸체에는 Yaw만 적용해 세워진 상태를 유지했습니다.
+
+| 물체의 Clone 표시와 텔레포트 |
+|---|
+| <img width="426" height="240" alt="Video Project 57" src="https://github.com/user-attachments/assets/8b4158c1-e949-4c38-ba62-804d99b03b83" /> |
+
+<details>
+<summary>관련 코드 위치</summary>
+
+**[PortalV2.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp)**
+
+- [`APortalV2::AddTraveller`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L476-L498)
+- [`APortalV2::RemoveTraveller`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L500-L521)
+- [`APortalV2::Tick`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L226-L292)
+- [`APortalV2::FindCrossPoint`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L696-L717)
+- [`APortalV2::IsPointInsideOpening`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L791-L800)
+- [`APortalV2::PreparePlayerCapture`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1497-L1522)
+- [`APortalV2::TransformPoint`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L523-L536)
+- [`APortalV2::TransformVector`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L538-L557)
+- [`APortalV2::TransformRotation`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L559-L578)
+- [`APortalV2::PortalTeleport`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L580-L614)
+- [`APortalV2::TeleportPlayer`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L719-L759)
+- [`APortalV2::TeleportObjects`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L1554-L1584)
+
+**[PortalTravellerComponent.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp)**
+
+- [`UPortalTravellerComponent::GetPortalCheckLocation`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp#L247-L261)
+- [`UPortalTravellerComponent::SetPhysicsData`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp#L233-L245)
+- [`UPortalTravellerComponent::ShowClone`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp#L284-L323)
+- [`UPortalTravellerComponent::UpdateClone`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp#L325-L334)
+- [`UPortalTravellerComponent::HideClone`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp#L336-L351)
+- [`UPortalTravellerComponent::SetOriginalClip`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp#L398-L416)
+
+**[PortalClone.h](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalClone.h)** · **[PortalClone.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalClone.cpp)**
+
+- [`APortalClone::UpdateClone`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalClone.cpp#L33-L43)
+- [`APortalClone::SetClip`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalClone.cpp#L49-L68)
+
+**[PortalStaticClone.h](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalStaticClone.h)** · **[PortalStaticClone.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalStaticClone.cpp)**
+
+- [`APortalStaticClone::APortalStaticClone`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalStaticClone.cpp#L9-L19)
+- [`APortalStaticClone::SetSource`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalStaticClone.cpp#L49-L78)
+
+**[BodyClone.h](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/Character/BodyClone.h)** · **[BodyClone.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/Character/BodyClone.cpp)**
+
+- [`ABodyClone::SetSource`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/Character/BodyClone.cpp#L69-L108)
+- [`ABodyClone::UpdateAnim`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/Character/BodyClone.cpp#L161-L184)
+- [`ABodyClone::UpdateClone`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/Character/BodyClone.cpp#L186-L209)
+- [`ABodyClone::SetCaptureVisibility`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/Character/BodyClone.cpp#L116-L137)
+
+</details>
+
+---
+
+<a id="portal-placement"></a>
+
+### 4.5 포탈 배치 - 설치 영역과 9곳의 표면 검사
+
+#### 문제 1 - 벽 가장자리에 설치하면 포탈 일부가 벽 밖으로 나감
+
+처음에는 포탈을 설치할 표면을 LineTrace로 찾고, 맞힌 지점인 `ImpactPoint`에 포탈을 놓았습니다. 
+
+벽 중앙에서는 괜찮았지만 가장자리에서는 포탈 일부가 벽 밖으로 나왔습니다. 포탈의 크기가 **180 × 260cm**여서, 중심뿐 아니라 전체가 들어갈 공간을 확인해야 했습니다.
+
+#### 1차 개선 - PlaceArea를 이용한 위치 보정
+
+벽·바닥·천장에 <strong>포탈을 설치할 수 있는 Box 영역(PlaceArea)</strong>을 지정했습니다. 
+
+포탈의 크기와 회전, 여백을 고려해 중심을 놓을 수 있는 범위를 구하고, 가장자리를 맞히면 그 범위 안의 가장 가까운 위치로 보정했습니다.
+
+#### 문제 2 - 실제 Mesh의 형태를 확인하지 못함
+
+설치 영역으로 위치를 맞춰도, 가운데 구멍이 있거나 외곽이 사각형이 아닌 Mesh에서는 포탈 일부가 허공에 걸치는 문제가 있었습니다. Box 범위만 확인하다 보니 그 안에 실제 표면이 없는 부분까지는 걸러내지 못했습니다.
+
+#### 2차 개선 - 9-Point Surface Probe
+
+이를 보완하기 위해 포탈 중앙과 네 모서리·네 변 중앙 부근의 **총 9곳에서 표면 방향으로 다시 Trace**했습니다. 
+
+`TraceComplex`를 켜고, 모든 지점이 처음 맞힌 것과 같은 Mesh Component를 맞히는지 확인했습니다. 표면 방향인 `Normal`도 비슷한 경우에만 다음 검사로 넘어갔습니다.
+
+| 벽 가장자리에서 설치 위치 보정 | 표면에 구멍이 있는 위치의 설치 차단 |
+|---|---|
+| <img width="426" height="240" alt="2" src="https://github.com/user-attachments/assets/88c3367c-8f5a-4bae-98a1-2783323e0836" /> | <img width="426" height="240" alt="1" src="https://github.com/user-attachments/assets/8d2ffe87-659f-48d5-b728-f3ff2b084f72" /> |
+
+#### 추가 검사 - 기존 포탈과의 겹침 확인
+
+마지막으로 설치 위치에서 Box 형태로 겹침을 검사하고, 기존 포탈과 겹치면 설치하지 않도록 했습니다.
+
+<details>
+<summary>관련 코드 위치</summary>
+
+**[PortalGunComponent.h](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.h)** · **[PortalGunComponent.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp)**
+
+- [`UPortalGunComponent::FindPortalSpot`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L166-L293)
+- [`UPortalGunComponent::CalculatePortalRotation`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L140-L164)
+- [`UPortalGunComponent::PortalInsidePlaceArea`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L327-L370)
+- [`UPortalGunComponent::PortalSupportCheck`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L454-L518)
+- [`UPortalGunComponent::IsPortalBlock`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L597-L650)
+- [`UPortalGunComponent::FirePortal`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L295-L325)
 
 </details>
 
@@ -426,7 +512,7 @@ FPortalRenderTickFunction::ExecuteTick
 
 <a id="portal-surface-collision"></a>
 
-### 4.5 포탈 통과 시 충돌 처리
+### 4.6 포탈 통과 시 충돌 처리
 
 #### 문제 - 포탈 주변의 벽이나 바닥까지 통과함
 
@@ -465,100 +551,31 @@ FPortalRenderTickFunction::ExecuteTick
 <details>
 <summary>관련 코드 위치</summary>
 
-```text
-PP3/PortalV2/PortalTravellerComponent.h
-PP3/PortalV2/PortalTravellerComponent.cpp
-PP3/PortalV2/PortalV2.cpp
-PP3/PortalV2/PortalSurfaceComponent.cpp
-PP3/PortalV2/PortalGunComponent.cpp
+**[PortalV2.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp)**
 
-APortalV2::OnPortalTriggerBegin
-APortalV2::OnPortalTriggerEnd
-APortalV2::IsTravellerBody
-APortalV2::AllPortalBlocksBlockOn
+- [`APortalV2::APortalV2`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L51-L174)
+- [`APortalV2::OnPortalTriggerBegin`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L449-L460)
+- [`APortalV2::OnPortalTriggerEnd`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L462-L474)
+- [`APortalV2::IsTravellerBody`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L773-L790)
+- [`APortalV2::AddTraveller`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L476-L498)
+- [`APortalV2::RemoveTraveller`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L500-L521)
+- [`APortalV2::AllPortalBlocksBlockOn`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalV2.cpp#L801-L810)
 
-UPortalTravellerComponent::EnterPortal
-UPortalTravellerComponent::ExitPortal
-UPortalTravellerComponent::UpdatePortalCollisionResponse
-UPortalTravellerComponent::RestorePortalCollisionResponse
+**[PortalTravellerComponent.h](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.h)** · **[PortalTravellerComponent.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp)**
 
-UPortalSurfaceComponent::GetSurfaceCollisionChannel
-UPortalGunComponent::FirePortal
-UPortalGunComponent::PortalBoxComponentsCheck
-```
+- [`UPortalTravellerComponent::EnterPortal`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp#L127-L135)
+- [`UPortalTravellerComponent::ExitPortal`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp#L137-L147)
+- [`UPortalTravellerComponent::UpdatePortalCollisionResponse`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp#L149-L198)
+- [`UPortalTravellerComponent::RestorePortalCollisionResponse`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalTravellerComponent.cpp#L200-L214)
 
-</details>
+**[PortalSurfaceComponent.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalSurfaceComponent.cpp)**
 
----
+- [`UPortalSurfaceComponent::GetSurfaceCollisionChannel`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalSurfaceComponent.cpp#L196-L202)
 
-<a id="portal-teleport-clone"></a>
+**[PortalGunComponent.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp)**
 
-### 4.6 텔레포트와 Clone
-
-#### 포탈에 걸쳐 있는 모습 표시
-
-포탈 입구의 Trigger에 들어오면 반대편에 원본과 같은 모습의 `Clone`을 보여줬습니다. Clone은 원본의 모습과 움직임을 따라가게 하고, 원본과 Clone의 Material에서 포탈 평면을 기준으로 불필요한 부분을 숨겼습니다. 이렇게 하나의 물체가 양쪽에 걸쳐 있는 것처럼 보이도록 했습니다.
-
-| 상태 | 들어간 포탈 쪽 | 나온 포탈 쪽 |
-|---|---|---|
-| 텔레포트 전 | 원본의 아직 넘어가지 않은 부분 | Clone의 넘어간 부분 |
-| 텔레포트 후 | Clone의 아직 남아 있는 부분 | 이동한 원본의 나온 부분 |
-
-Trigger에서 완전히 빠져나오면 Clone을 숨기고 원본 전체가 보이도록 복구했습니다. Clone은 처음 필요할 때 생성해 재사용하고, 표시용이므로 충돌은 껐습니다.
-
-물체 Clone은 물리 시뮬레이션도 끄고, 캐릭터 Clone은 Master Pose로 원본의 애니메이션 포즈를 따라가게 했습니다.
-
-#### 추가 개선 - 시점에 따른 1인칭 팔·총 표시
-
-캐릭터에는 1인칭 화면용 팔·총과 외부에서 보이는 몸체·총을 따로 뒀습니다. 그런데 Clone의 1인칭 팔·총을 포탈 Capture에서 숨기면 통과 중 총이 끊겨 보였고, 그대로 표시하면 다른 각도에서 몸체와 맞지 않는 팔·총이 보였습니다.
-
-| 1인칭 팔·총이 잘못 보이거나 끊기는 문제 |
-|---|
-| <img width="560" height="240" alt="Video Project 51" src="https://github.com/user-attachments/assets/11c25f13-1403-4db5-9f1c-efa254a365f8" /> |
-
-이를 해결하기 위해 Capture 직전에 표시할 Mesh를 구분해, **현재 통과 중인 포탈의 최종 Capture에서는 1인칭 팔·총을, 반대편 포탈과 안쪽 재귀 Capture에서는 몸체·총을 표시**했습니다. 플레이어가 월드를 직접 보는 화면에서도 Clone의 1인칭 팔·총은 숨겨, 출구 쪽에 따로 드러나지 않도록 했습니다.
-
-| 시점별 팔·총 표시 개선과 포탈 통과 |
-|---|
-| <img width="560" height="240" alt="Video_Project_56_under_10MB" src="https://github.com/user-attachments/assets/d1f972e6-5aff-4d56-8bb4-8092a8aa3fac" /> |
-
-#### 실제 텔레포트 판정
-
-Trigger에 들어왔다고 바로 텔레포트하지는 않았습니다. 캐릭터는 Capsule 중심, 물리 오브젝트는 질량 중심의 이전·현재 위치를 비교했습니다.
-
-포탈 앞에서 뒤로 넘어갔다면 두 위치를 잇는 선과 포탈 평면의 교차점을 구했습니다. **그 점이 입구 범위 안일 때만** 위치·방향·이동 속도를 반대편 기준으로 변환해 텔레포트하고, 물리 오브젝트는 회전 속도도 함께 변환했습니다. 캐릭터는 시점 방향을 변환하되 몸체에는 Yaw만 적용해 세워진 상태를 유지했습니다.
-
-| 물체의 Clone 표시와 텔레포트 |
-|---|
-| <img width="426" height="240" alt="Video Project 57" src="https://github.com/user-attachments/assets/8b4158c1-e949-4c38-ba62-804d99b03b83" /> |
-
-<details>
-<summary>관련 코드 위치</summary>
-
-```text
-PP3/PortalV2/PortalV2.cpp
-PP3/PortalV2/PortalTravellerComponent.cpp
-PP3/PortalV2/PortalClone.h/.cpp
-PP3/PortalV2/PortalStaticClone.h/.cpp
-PP3/Character/BodyClone.h/.cpp
-
-APortalV2::AddTraveller
-APortalV2::FindCrossPoint
-APortalV2::IsPointInsideOpening
-APortalV2::PreparePlayerCapture
-APortalV2::TransformPoint
-APortalV2::TransformVector
-APortalV2::TransformRotation
-APortalV2::PortalTeleport
-APortalV2::TeleportPlayer
-APortalV2::TeleportObjects
-
-UPortalTravellerComponent::ShowClone
-UPortalTravellerComponent::UpdateClone
-UPortalTravellerComponent::SetOriginalClip
-ABodyClone::UpdateAnim
-ABodyClone::SetCaptureVisibility
-```
+- [`UPortalGunComponent::FirePortal`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L295-L325)
+- [`UPortalGunComponent::PortalBoxComponentsCheck`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L923-L970)
 
 </details>
 
@@ -586,18 +603,16 @@ ABodyClone::SetCaptureVisibility
 <details>
 <summary>관련 코드 위치</summary>
 
-```text
-PP3/PortalV2/PortalGunComponent.h
-PP3/PortalV2/PortalGunComponent.cpp
+**[PortalGunComponent.h](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.h)** · **[PortalGunComponent.cpp](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp)**
 
-UPortalGunComponent::FindGrabHit
-UPortalGunComponent::GrabObject
-UPortalGunComponent::GrabUpdate
-UPortalGunComponent::OnPlayerTeleport
-UPortalGunComponent::OnGrabObjectTeleport
-UPortalGunComponent::ResetGrabAfterTeleport
-UPortalGunComponent::GrabLaunch
-```
+- [`UPortalGunComponent::BeginPlay`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L51-L73)
+- [`UPortalGunComponent::FindGrabHit`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L671-L733)
+- [`UPortalGunComponent::GrabObject`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L805-L846)
+- [`UPortalGunComponent::GrabUpdate`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L848-L868)
+- [`UPortalGunComponent::OnPlayerTeleport`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L778-L789)
+- [`UPortalGunComponent::OnGrabObjectTeleport`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L791-L803)
+- [`UPortalGunComponent::ResetGrabAfterTeleport`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L905-L921)
+- [`UPortalGunComponent::GrabLaunch`](https://github.com/tjwjdah/Unreal4.27_Portal/blob/61618c00788e41165ac2215e671f998a761472cf/PP3-1/Source/PP3/PortalV2/PortalGunComponent.cpp#L883-L903)
 
 </details>
 
