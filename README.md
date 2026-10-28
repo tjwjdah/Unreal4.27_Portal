@@ -7,8 +7,9 @@
 
 ## 시연 영상
 
+
 <a href="https://youtu.be/VeI2WFhfKv0">
-  <img width="1936" height="1048" alt="ScreenShot00040" src="https://github.com/user-attachments/assets/7428b141-4c46-476f-a6b1-67cf8e904d31" />
+  <img width="1936" height="1048" alt="포탈" src="https://github.com/user-attachments/assets/2b9ab5ce-b8b9-496a-8203-46e025379540" />
 </a>
 
 ▶ [전체 시연 영상](https://youtu.be/VeI2WFhfKv0)
